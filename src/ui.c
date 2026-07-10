@@ -253,7 +253,84 @@ void ui_show_cursor(int x, int y) {
 
 void ui_clear_screen(void) {
     emit_sgr();
-    buf_append_str(L"\x1b[2J");
+    if (g_buf_cap < g_termW) {
+        g_buf_cap = g_termW * 2;
+        g_buf = (wchar_t *)realloc(g_buf, g_buf_cap * sizeof(wchar_t));
+    }
+    wchar_t *spaces = (wchar_t *)malloc(((size_t)g_termW + 2) * sizeof(wchar_t));
+    if (spaces) {
+        for (int i = 0; i < g_termW; i++) spaces[i] = L' ';
+        spaces[g_termW] = 0;
+        for (int y = 0; y < g_termH; y++) {
+            ui_move(0, y);
+            buf_append(spaces, g_termW);
+        }
+        free(spaces);
+    }
+}
+
+void ui_draw_progress(const Theme *theme, int tw, int th,
+                      int done, int total, const wchar_t *title,
+                      const wchar_t *file, DWORD elapsed_ms) {
+    int bw = tw - 4;
+    if (bw < 30) bw = 30;
+    int bh = 5;
+    int bx = (tw - bw) / 2;
+    int by = th - bh - 2;
+    if (by < 2) by = 2;
+    if (by + bh >= th) by = th - bh - 1;
+    if (by < 0) by = 0;
+
+    /* background */
+    ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+    ui_set_fg(theme_get(theme, COLOR_FILE));
+    ui_fill_rect(bx, by, bw, bh, L' ');
+
+    /* border */
+    ui_set_fg(theme_get(theme, COLOR_FOCUS_BORDER));
+    ui_draw_rect(bx, by, bw, bh);
+
+    /* title */
+    ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+    ui_set_fg(theme_get(theme, COLOR_SELECTED_FG));
+    ui_set_bold();
+    ui_draw_text(bx + 2, by + 1, title);
+    ui_reset_colors();
+
+    /* file name */
+    ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+    ui_set_fg(theme_get(theme, COLOR_FILE));
+    ui_draw_text_trunc(bx + 2, by + 2, bw - 4, file ? file : L"...");
+    ui_reset_colors();
+
+    /* progress bar background */
+    int bar_x = bx + 2;
+    int bar_y = by + 3;
+    int bar_w = bw - 4;
+    ui_set_bg(theme_get(theme, COLOR_TAB_INACTIVE));
+    ui_set_fg(theme_get(theme, COLOR_TAB_INACTIVE));
+    ui_draw_h_line(bar_x, bar_y, bar_w, L'\x2591');   /* light shade */
+
+    /* progress bar fill */
+    if (total > 0) {
+        int fill = (int)(((int64_t)done * (bar_w - 2)) / total);
+        if (fill < 0) fill = 0;
+        if (fill > bar_w - 2) fill = bar_w - 2;
+        ui_set_bg(theme_get(theme, COLOR_PROGRESS));
+        ui_set_fg(theme_get(theme, COLOR_PROGRESS));
+        ui_draw_h_line(bar_x + 1, bar_y, fill, L'\x2588');  /* full block */
+    }
+
+    /* info line */
+    ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+    ui_set_fg(theme_get(theme, COLOR_FILE));
+    ui_set_dim();
+    wchar_t info[256];
+    DWORD secs = elapsed_ms / 1000;
+    swprintf_s(info, 256, L" %d/%d   %d:%02d  [Esc to hide] ",
+               done, total, secs / 60, secs % 60);
+    ui_draw_text(bx + 2, by + bh - 2, info);
+    ui_reset_colors();
 }
 
 void ui_message_box(const Theme *theme, const wchar_t *title, const wchar_t *msg) {

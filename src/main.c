@@ -76,12 +76,13 @@ static void init_app(void) {
 
     g_app.running = 1;
     g_app.needs_redraw = 1;
+    bgop_init(&g_app.bgtask);
 }
 
 static void shutdown_app(void) {
     g_app.running = 0;
+    bgop_free(&g_app.bgtask);
 
-    /* save config */
     config_save(&g_app.config, config_get_path());
 
     for (int i = 0; i < 2; i++) panel_free(&g_app.panels[i]);
@@ -111,14 +112,27 @@ static void render(void) {
     ui_fill_rect(0, 0, tw, 1, L' ');
 
     int total_tagged = g_app.panels[0].tagged_count + g_app.panels[1].tagged_count;
-    const wchar_t *keybar_fmt = total_tagged > 0
-        ? L" F2Refresh  F3View  F4Edit  F5Copy  F6Move  F7Mkdir  F8Delete  F10Quit   Tagged:%d"
-        : L" F2Refresh  F3View  F4Edit  F5Copy  F6Move  F7Mkdir  F8Delete  F10Quit";
-    wchar_t keybar[256];
-    if (total_tagged > 0)
-        swprintf_s(keybar, 256, keybar_fmt, total_tagged);
-    else
-        wcscpy_s(keybar, 256, keybar_fmt);
+    int bgop_running = bgop_is_active(&g_app.bgtask);
+    wchar_t keybar[320];
+
+    if (bgop_running) {
+        const wchar_t *opnames[] = { L"?", L"Copy", L"Move", L"Delete" };
+        int op = (g_app.bgtask.op_type >= 1 && g_app.bgtask.op_type <= 3) ? g_app.bgtask.op_type : 0;
+        const wchar_t *vis = g_app.bgtask.visible ? L"" : L" [hidden]";
+        if (total_tagged > 0)
+            swprintf_s(keybar, 320, L" [>> %s %d/%d%s]  F2Rfrsh  F3Prog  F5Copy  F6Move  F8Del  F12Quit  Tag:%d",
+                       opnames[op], (int)g_app.bgtask.done_items,
+                       g_app.bgtask.total_items, vis, total_tagged);
+        else
+            swprintf_s(keybar, 320, L" [>> %s %d/%d%s]  F2Rfrsh  F3Prog  F5Copy  F6Move  F8Del  F12Quit",
+                       opnames[op], (int)g_app.bgtask.done_items,
+                       g_app.bgtask.total_items, vis);
+    } else if (total_tagged > 0) {
+        swprintf_s(keybar, 320, L" F2Rfrsh  F3View  F5Copy  F6Move  F7Mkdir  F8Del  F12Quit   Tagged:%d",
+                   total_tagged);
+    } else {
+        wcscpy_s(keybar, 320, L" F2Rfrsh  F3View  F5Copy  F6Move  F7Mkdir  F8Del  F12Quit");
+    }
     ui_draw_text_trunc(0, 0, tw, keybar);
 
     /* ---------- panels ---------- */
@@ -126,6 +140,17 @@ static void render(void) {
                  g_app.focus == FOCUS_LEFT);
     panel_render(&g_app.panels[1], &g_app.theme, lw, panel_start_y, tw - lw, panel_h,
                  g_app.focus == FOCUS_RIGHT);
+
+    /* ---------- progress overlay (if active and visible) ---------- */
+    if (bgop_is_active(&g_app.bgtask) && g_app.bgtask.visible) {
+        DWORD elapsed = GetTickCount() - g_app.bgtask.start_ticks;
+        ui_draw_progress(&g_app.theme, tw, th,
+                         g_app.bgtask.done_items,
+                         g_app.bgtask.total_items,
+                         g_app.bgtask.title,
+                         g_app.bgtask.current_file[0] ? g_app.bgtask.current_file : L"...",
+                         elapsed);
+    }
 
     /* ---------- command line (bottom row) ---------- */
     int cmd_y = th - 1;
@@ -142,6 +167,17 @@ static void render(void) {
 
 static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
     if (ev->code == KEY_RESIZE) {
+        g_app.needs_redraw = 1;
+        return;
+    }
+
+    if (bgop_is_active(&g_app.bgtask) && ev->code == KEY_ESC) {
+        g_app.bgtask.visible = 0;
+        g_app.needs_redraw = 1;
+        return;
+    }
+    if (bgop_is_active(&g_app.bgtask) && ev->code == KEY_F3) {
+        g_app.bgtask.visible = !g_app.bgtask.visible;
         g_app.needs_redraw = 1;
         return;
     }
@@ -247,42 +283,45 @@ static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
         g_app.needs_redraw = 1;
         break;
     case KEY_F5: {
+        if (bgop_is_active(&g_app.bgtask)) break;
         Panel *other = (panel_idx == 0) ? &g_app.panels[1] : &g_app.panels[0];
         FileEntry *entries;
         int count;
         if (panel_tagged_or_current(panel, &entries, &count)) {
-            const wchar_t **paths = (const wchar_t **)malloc(count * sizeof(wchar_t *));
-            for (int i = 0; i < count; i++) {
-                paths[i] = (const wchar_t *)path_join(panel_current_path(panel), entries[i].name);
-                /* need to store these to free later... */
-            }
-            ops_copy_files(paths, count, panel_current_path(other), &g_app.theme);
-            for (int i = 0; i < count; i++) free((void *)paths[i]);
-            free(paths);
+            BgTask *bg = &g_app.bgtask;
+            bgop_lock(bg);
+            bg->path_count = 0;
+            for (int i = 0; i < count && i < 4096; i++)
+                bg->paths[bg->path_count++] = path_join(panel_current_path(panel), entries[i].name);
+            wcscpy_s(bg->dest_dir, BGOP_PATH_MAX, panel_current_path(other));
+            bg->panel_src = panel; bg->panel_dst = other;
+            bg->fs_provider = (void *)g_app.fs;
+            bgop_unlock(bg);
             free(entries);
             panel_clear_tags(panel);
-            panel_refresh(other, g_app.fs);
-            panel_refresh(panel, g_app.fs);
+            bgop_start_copy(bg);
         }
         g_app.needs_redraw = 1;
         break;
     }
     case KEY_F6: {
+        if (bgop_is_active(&g_app.bgtask)) break;
         Panel *other = (panel_idx == 0) ? &g_app.panels[1] : &g_app.panels[0];
         FileEntry *entries;
         int count;
         if (panel_tagged_or_current(panel, &entries, &count)) {
-            const wchar_t **paths = (const wchar_t **)malloc(count * sizeof(wchar_t *));
-            for (int i = 0; i < count; i++) {
-                paths[i] = (const wchar_t *)path_join(panel_current_path(panel), entries[i].name);
-            }
-            ops_move_files(paths, count, panel_current_path(other), &g_app.theme);
-            for (int i = 0; i < count; i++) free((void *)paths[i]);
-            free(paths);
+            BgTask *bg = &g_app.bgtask;
+            bgop_lock(bg);
+            bg->path_count = 0;
+            for (int i = 0; i < count && i < 4096; i++)
+                bg->paths[bg->path_count++] = path_join(panel_current_path(panel), entries[i].name);
+            wcscpy_s(bg->dest_dir, BGOP_PATH_MAX, panel_current_path(other));
+            bg->panel_src = panel; bg->panel_dst = other;
+            bg->fs_provider = (void *)g_app.fs;
+            bgop_unlock(bg);
             free(entries);
             panel_clear_tags(panel);
-            panel_refresh(other, g_app.fs);
-            panel_refresh(panel, g_app.fs);
+            bgop_start_move(bg);
         }
         g_app.needs_redraw = 1;
         break;
@@ -295,28 +334,33 @@ static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
         break;
     }
     case KEY_F8: {
+        if (bgop_is_active(&g_app.bgtask)) break;
         FileEntry *entries;
         int count;
         if (panel_tagged_or_current(panel, &entries, &count)) {
             wchar_t msg[512];
             swprintf_s(msg, 512, L"Delete %d item(s)?", count);
             if (ui_confirm_dialog(&g_app.theme, L"Delete", msg)) {
-                const wchar_t **paths = (const wchar_t **)malloc(count * sizeof(wchar_t *));
-                for (int i = 0; i < count; i++) {
-                    paths[i] = (const wchar_t *)path_join(panel_current_path(panel), entries[i].name);
-                }
-                ops_delete_files(paths, count, &g_app.theme);
-                for (int i = 0; i < count; i++) free((void *)paths[i]);
-                free(paths);
+                BgTask *bg = &g_app.bgtask;
+                bgop_lock(bg);
+                bg->path_count = 0;
+                for (int i = 0; i < count && i < 4096; i++)
+                    bg->paths[bg->path_count++] = path_join(panel_current_path(panel), entries[i].name);
+                bg->dest_dir[0] = 0;
+                bg->panel_src = panel; bg->panel_dst = NULL;
+                bg->fs_provider = (void *)g_app.fs;
+                bgop_unlock(bg);
                 panel_clear_tags(panel);
+                bgop_start_delete(bg);
             }
             free(entries);
-            panel_refresh(panel, g_app.fs);
         }
         g_app.needs_redraw = 1;
         break;
     }
     case KEY_F10:
+        break;
+    case KEY_F12:
         g_app.running = 0;
         break;
     case KEY_TAB:
@@ -347,6 +391,17 @@ static void handle_cmdline_input(KeyEvent *ev) {
         return;
     }
 
+    if (bgop_is_active(&g_app.bgtask) && ev->code == KEY_ESC) {
+        g_app.bgtask.visible = 0;
+        g_app.needs_redraw = 1;
+        return;
+    }
+    if (bgop_is_active(&g_app.bgtask) && ev->code == KEY_F3) {
+        g_app.bgtask.visible = !g_app.bgtask.visible;
+        g_app.needs_redraw = 1;
+        return;
+    }
+
     switch (ev->code) {
     case KEY_ENTER:
         cmdline_execute(&g_app.cmdline);
@@ -361,6 +416,8 @@ static void handle_cmdline_input(KeyEvent *ev) {
         g_app.needs_redraw = 1;
         break;
     case KEY_F10:
+        break;
+    case KEY_F12:
         g_app.running = 0;
         break;
     case KEY_BACKSPACE:
@@ -430,15 +487,40 @@ int main(void) {
             g_app.needs_redraw = 1;
         }
 
+        /* check for background task completion */
+        if (bgop_is_active(&g_app.bgtask) &&
+            InterlockedCompareExchange(&g_app.bgtask.finished, 0, 0)) {
+            Panel *src = (Panel *)g_app.bgtask.panel_src;
+            Panel *dst = (Panel *)g_app.bgtask.panel_dst;
+            panel_refresh(src, g_app.fs);
+            if (dst) panel_refresh(dst, g_app.fs);
+            bgop_free(&g_app.bgtask);
+            bgop_init(&g_app.bgtask);
+            g_app.needs_redraw = 1;
+        }
+
+        /* force redraw while bgop is active (progress bar animation) */
+        if (bgop_is_active(&g_app.bgtask)) {
+            g_app.needs_redraw = 1;
+        }
+
         if (g_app.needs_redraw) {
             render();
             g_app.needs_redraw = 0;
         }
 
         KeyEvent ev;
-        if (input_poll(&ev)) {
+        int got_input;
+        if (bgop_is_active(&g_app.bgtask)) {
+            /* poll with timeout so progress bar updates */
+            got_input = input_poll_timeout(&ev, 100);
+        } else {
+            got_input = input_poll(&ev);
+        }
+
+        if (got_input) {
             switch (ev.code) {
-            case KEY_F10:
+            case KEY_F12:
                 g_app.running = 0;
                 break;
             case KEY_RESIZE:
