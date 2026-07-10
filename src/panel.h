@@ -29,6 +29,13 @@ typedef struct {
     int        sort_reverse;
     int        show_hidden;
     int        dirty;
+
+    int        in_drive_list;
+    wchar_t    drive_paths[26][520];
+    FileEntry  saved_entries[4096];
+    int        saved_entry_count;
+    int        saved_cursor;
+    wchar_t    saved_path[520];
 } Panel;
 
 void panel_init(Panel *p, const wchar_t *start_dir);
@@ -37,6 +44,9 @@ void panel_free(Panel *p);
 void panel_refresh(Panel *p, const FsProvider *fs);
 void panel_enter_dir(Panel *p, const FsProvider *fs);
 void panel_go_parent(Panel *p, const FsProvider *fs);
+void panel_go_drives(Panel *p, const FsProvider *fs);
+void panel_exit_drives(Panel *p, const FsProvider *fs);
+void panel_enter_on_drive(Panel *p, const FsProvider *fs);
 void panel_cursor_up(Panel *p);
 void panel_cursor_down(Panel *p);
 void panel_page_up(Panel *p, int page_h);

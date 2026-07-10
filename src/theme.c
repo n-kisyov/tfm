@@ -66,7 +66,7 @@ int theme_load(Theme *t, const wchar_t *path) {
     if (h == INVALID_HANDLE_VALUE) return 0;
     DWORD size = GetFileSize(h, NULL);
     if (size == INVALID_FILE_SIZE || size > 65536) { CloseHandle(h); return 0; }
-    wchar_t *buf = (wchar_t *)calloc(size / 2 + 2, sizeof(wchar_t));
+    wchar_t *buf = (wchar_t *)calloc(size + 2, sizeof(wchar_t));
     if (!buf) { CloseHandle(h); return 0; }
     char *mb_buf = (char *)malloc(size + 1);
     if (!mb_buf) { free(buf); CloseHandle(h); return 0; }
@@ -75,7 +75,7 @@ int theme_load(Theme *t, const wchar_t *path) {
     CloseHandle(h);
     if (!ok) { free(buf); free(mb_buf); return 0; }
     mb_buf[read] = 0;
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, mb_buf, -1, buf, (int)(size / 2 + 2));
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, mb_buf, -1, buf, (int)(size + 1));
     free(mb_buf);
     if (wlen <= 0) { free(buf); return 0; }
 

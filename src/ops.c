@@ -177,10 +177,10 @@ int ops_mkdir_dialog(const wchar_t *parent_dir, const Theme *theme,
     if (!ui_input_dialog(theme, L"Create directory name:", name, 256)) return 0;
     if (name[0] == 0) return 0;
     wchar_t *full = path_join(parent_dir, name);
-    int ok = fs->mkdir(full);
+    int ok = fs->mkdir(full);  /* 0 = success, -1 = failure */
     if (new_name_out && name_sz > 0) wcscpy_s(new_name_out, name_sz, name);
     free(full);
-    if (!ok) {
+    if (ok != 0) {
         wchar_t msg[512];
         swprintf_s(msg, 512, L"Failed to create \"%s\"", name);
         ui_message_box(theme, L"Error", msg);

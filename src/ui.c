@@ -253,19 +253,10 @@ void ui_show_cursor(int x, int y) {
 
 void ui_clear_screen(void) {
     emit_sgr();
-    if (g_buf_cap < g_termW) {
-        g_buf_cap = g_termW * 2;
-        g_buf = (wchar_t *)realloc(g_buf, g_buf_cap * sizeof(wchar_t));
-    }
-    wchar_t *spaces = (wchar_t *)malloc(((size_t)g_termW + 2) * sizeof(wchar_t));
-    if (spaces) {
-        for (int i = 0; i < g_termW; i++) spaces[i] = L' ';
-        spaces[g_termW] = 0;
-        for (int y = 0; y < g_termH; y++) {
-            ui_move(0, y);
-            buf_append(spaces, g_termW);
-        }
-        free(spaces);
+    for (int y = 0; y < g_termH; y++) {
+        ui_move(0, y);
+        for (int x = 0; x < g_termW; x++)
+            buf_append_str(L" ");
     }
 }
 
@@ -347,6 +338,10 @@ void ui_message_box(const Theme *theme, const wchar_t *title, const wchar_t *msg
     while (1) {
         ui_begin_frame();
 
+        ui_set_bg(theme_get(theme, COLOR_BG));
+        ui_clear_screen();
+        ui_reset_colors();
+
         ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
         ui_set_fg(theme_get(theme, COLOR_FILE));
         ui_draw_rect_content(bx, by, bw, bh);
@@ -386,6 +381,10 @@ int ui_confirm_dialog(const Theme *theme, const wchar_t *title, const wchar_t *m
 
     while (1) {
         ui_begin_frame();
+
+        ui_set_bg(theme_get(theme, COLOR_BG));
+        ui_clear_screen();
+        ui_reset_colors();
 
         ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
         ui_set_fg(theme_get(theme, COLOR_FILE));
@@ -459,6 +458,10 @@ int ui_input_dialog(const Theme *theme, const wchar_t *title, wchar_t *buf, int 
 
     while (1) {
         ui_begin_frame();
+
+        ui_set_bg(theme_get(theme, COLOR_BG));
+        ui_clear_screen();
+        ui_reset_colors();
 
         ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
         ui_set_fg(theme_get(theme, COLOR_FILE));

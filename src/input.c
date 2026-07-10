@@ -75,6 +75,7 @@ static KeyCode map_vk(WORD vk, DWORD ctrl) {
             if (vk == L'W') return KEY_CTRL_W;
             if (vk == L'C') return KEY_CTRL_C;
             if (vk == L'R') return KEY_CTRL_R;
+            if (vk == L'D') return KEY_CTRL_D;
         }
         return KEY_CHAR;
     }

@@ -38,7 +38,7 @@ int config_load(Config *c, const wchar_t *path) {
     if (h == INVALID_HANDLE_VALUE) return 0;
     DWORD size = GetFileSize(h, NULL);
     if (size == INVALID_FILE_SIZE || size > 65536) { CloseHandle(h); return 0; }
-    wchar_t *buf = (wchar_t *)calloc(size / 2 + 2, sizeof(wchar_t));
+    wchar_t *buf = (wchar_t *)calloc(size + 2, sizeof(wchar_t));
     if (!buf) { CloseHandle(h); return 0; }
     char *mb_buf = (char *)malloc(size + 1);
     if (!mb_buf) { free(buf); CloseHandle(h); return 0; }
@@ -46,7 +46,7 @@ int config_load(Config *c, const wchar_t *path) {
     ReadFile(h, mb_buf, size, &read, NULL);
     CloseHandle(h);
     mb_buf[read] = 0;
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, mb_buf, -1, buf, (int)(size / 2 + 2));
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, mb_buf, -1, buf, (int)(size + 1));
     free(mb_buf);
     if (wlen <= 0) { free(buf); return 0; }
     JsonValue root = json_parse(buf);
@@ -73,12 +73,20 @@ int config_load(Config *c, const wchar_t *path) {
                 int tc = 0;
                 for (int ti = 0; ti < tabs->arr.count && ti < MAX_TABS; ti++) {
                     JsonValue *tv = json_arr_get(tabs, ti);
-                    if (tv && tv->type == JSON_STRING) {
+                    if (tv && tv->type == JSON_STRING && tv->str_val[0]) {
                         wcscpy_s(c->startup_dirs[pi][ti], CONFIG_MAX_PATH, tv->str_val);
                         tc++;
                     }
                 }
                 c->startup_tab_counts[pi] = tc > 0 ? tc : 1;
+            }
+            JsonValue *drives = json_get(pv, L"drives");
+            if (drives && drives->type == JSON_ARRAY) {
+                for (int d = 0; d < drives->arr.count && d < 26; d++) {
+                    JsonValue *dv = json_arr_get(drives, d);
+                    if (dv && dv->type == JSON_STRING && dv->str_val[0])
+                        wcscpy_s(c->drive_paths[pi][d], CONFIG_MAX_PATH, dv->str_val);
+                }
             }
         }
     }
@@ -86,37 +94,94 @@ int config_load(Config *c, const wchar_t *path) {
     return 1;
 }
 
+static int buf_puts(wchar_t *buf, int cap, int pos, const wchar_t *str) {
+    while (*str && pos < cap - 1) buf[pos++] = *str++;
+    buf[pos] = 0;
+    return pos;
+}
+
+static int buf_json_string(wchar_t *buf, int cap, int pos, const wchar_t *str) {
+    if (pos >= cap - 2) return pos;
+    buf[pos++] = L'"';
+    if (str) {
+        for (const wchar_t *s = str; *s && pos < cap - 3; s++) {
+            if (pos >= cap - 2) break;
+            if (*s == L'\\')      { buf[pos++] = L'\\'; buf[pos++] = L'\\'; }
+            else if (*s == L'"')  { buf[pos++] = L'\\'; buf[pos++] = L'"'; }
+            else if (*s == L'\r') { buf[pos++] = L'\\'; buf[pos++] = L'r'; }
+            else if (*s == L'\n') { buf[pos++] = L'\\'; buf[pos++] = L'n'; }
+            else if (*s == L'\t') { buf[pos++] = L'\\'; buf[pos++] = L't'; }
+            else                   buf[pos++] = *s;
+        }
+    }
+    if (pos < cap - 1) buf[pos++] = L'"';
+    buf[pos] = 0;
+    return pos;
+}
+
 int config_save(const Config *c, const wchar_t *path) {
     HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, NULL,
                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return 0;
-    wchar_t buf[8192];
+    wchar_t *buf = (wchar_t *)calloc(65536, sizeof(wchar_t));
+    if (!buf) { CloseHandle(h); return 0; }
+    int cap = 65536;
     int pos = 0;
-    pos += swprintf_s(buf + pos, 8192 - pos, L"{\r\n");
-    pos += swprintf_s(buf + pos, 8192 - pos, L"  \"theme\": \"%s\",\r\n", c->theme_path);
-    pos += swprintf_s(buf + pos, 8192 - pos, L"  \"show_hidden\": %s,\r\n", c->show_hidden ? L"true" : L"false");
-    pos += swprintf_s(buf + pos, 8192 - pos, L"  \"sort_by\": %d,\r\n", c->sort_by);
-    pos += swprintf_s(buf + pos, 8192 - pos, L"  \"sort_reverse\": %s,\r\n", c->sort_reverse ? L"true" : L"false");
-    pos += swprintf_s(buf + pos, 8192 - pos, L"  \"confirm_delete\": %s,\r\n", c->confirm_delete ? L"true" : L"false");
-    pos += swprintf_s(buf + pos, 8192 - pos, L"  \"panel_split_pct\": %d,\r\n", c->panel_split_pct);
-    pos += swprintf_s(buf + pos, 8192 - pos, L"  \"panels\": [\r\n");
+
+    pos = buf_puts(buf, cap, pos, L"{\r\n");
+
+    pos = buf_puts(buf, cap, pos, L"  \"theme\": ");
+    pos = buf_json_string(buf, cap, pos, c->theme_path);
+    pos = buf_puts(buf, cap, pos, L",\r\n");
+
+    pos = buf_puts(buf, cap, pos, L"  \"sort_by\": ");
+    wchar_t num[32];
+    _itow_s(c->sort_by, num, 32, 10);
+    pos = buf_puts(buf, cap, pos, num);
+    pos = buf_puts(buf, cap, pos, L",\r\n");
+
+    pos = buf_puts(buf, cap, pos, L"  \"sort_reverse\": ");
+    pos = buf_puts(buf, cap, pos, c->sort_reverse ? L"true" : L"false");
+    pos = buf_puts(buf, cap, pos, L",\r\n");
+
+    pos = buf_puts(buf, cap, pos, L"  \"panel_split_pct\": ");
+    _itow_s(c->panel_split_pct, num, 32, 10);
+    pos = buf_puts(buf, cap, pos, num);
+    pos = buf_puts(buf, cap, pos, L",\r\n");
+
+    pos = buf_puts(buf, cap, pos, L"  \"panels\": [\r\n");
     for (int pi = 0; pi < 2; pi++) {
-        pos += swprintf_s(buf + pos, 8192 - pos, L"    {\r\n");
-        pos += swprintf_s(buf + pos, 8192 - pos, L"      \"tabs\": [\r\n");
+        pos = buf_puts(buf, cap, pos, L"    {\r\n");
+        pos = buf_puts(buf, cap, pos, L"      \"tabs\": [\r\n");
         for (int ti = 0; ti < c->startup_tab_counts[pi]; ti++) {
-            pos += swprintf_s(buf + pos, 8192 - pos, L"        \"%s\"%s\r\n",
-                              c->startup_dirs[pi][ti],
-                              ti < c->startup_tab_counts[pi] - 1 ? L"," : L"");
+            pos = buf_puts(buf, cap, pos, L"        ");
+            pos = buf_json_string(buf, cap, pos, c->startup_dirs[pi][ti]);
+            pos = buf_puts(buf, cap, pos, ti < c->startup_tab_counts[pi] - 1 ? L",\r\n" : L"\r\n");
         }
-        pos += swprintf_s(buf + pos, 8192 - pos, L"      ]\r\n");
-        pos += swprintf_s(buf + pos, 8192 - pos, L"    }%s\r\n", pi < 1 ? L"," : L"");
+        pos = buf_puts(buf, cap, pos, L"      ],\r\n");
+        pos = buf_puts(buf, cap, pos, L"      \"drives\": [\r\n");
+        for (int d = 0; d < 26; d++) {
+            pos = buf_puts(buf, cap, pos, L"        ");
+            pos = buf_json_string(buf, cap, pos,
+                c->drive_paths[pi][d][0] ? c->drive_paths[pi][d] : L"");
+            pos = buf_puts(buf, cap, pos, d < 25 ? L",\r\n" : L"\r\n");
+        }
+        pos = buf_puts(buf, cap, pos, L"      ]\r\n");
+        pos = buf_puts(buf, cap, pos, L"    }");
+        pos = buf_puts(buf, cap, pos, pi < 1 ? L",\r\n" : L"\r\n");
     }
-    pos += swprintf_s(buf + pos, 8192 - pos, L"  ]\r\n");
-    pos += swprintf_s(buf + pos, 8192 - pos, L"}\r\n");
-    char mb_buf[16384];
-    int mb_len = WideCharToMultiByte(CP_UTF8, 0, buf, pos, mb_buf, (int)sizeof(mb_buf), NULL, NULL);
+    pos = buf_puts(buf, cap, pos, L"  ]\r\n");
+    pos = buf_puts(buf, cap, pos, L"}\r\n");
+
+    char *mb_buf = (char *)calloc(pos * 4 + 1, 1);
+    int mb_len = 0;
+    if (mb_buf) {
+        mb_len = WideCharToMultiByte(CP_UTF8, 0, buf, pos, mb_buf, (int)(pos * 4), NULL, NULL);
+    }
+    free(buf);
     DWORD written;
     BOOL ok = WriteFile(h, mb_buf, mb_len, &written, NULL);
+    free(mb_buf);
     CloseHandle(h);
     return ok && (written == (DWORD)mb_len);
 }

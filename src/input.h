@@ -28,6 +28,7 @@ typedef enum {
     KEY_CTRL_W,
     KEY_CTRL_C,
     KEY_CTRL_R,
+    KEY_CTRL_D,
     KEY_BACKSPACE,
     KEY_DELETE,
     KEY_INSERT,

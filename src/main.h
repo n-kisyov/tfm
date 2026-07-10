@@ -26,6 +26,7 @@ typedef struct {
     int         tw, th;
     int         left_w;
     int         needs_redraw;
+    int         show_help;
     const FsProvider *fs;
     BgTask      bgtask;
 } AppState;

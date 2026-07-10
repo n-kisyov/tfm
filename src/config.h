@@ -11,6 +11,7 @@ typedef struct {
     wchar_t  theme_path[CONFIG_MAX_PATH];
     wchar_t  startup_dirs[2][MAX_TABS][CONFIG_MAX_PATH];
     int      startup_tab_counts[2];
+    wchar_t  drive_paths[2][26][CONFIG_MAX_PATH];
     int      show_hidden;
     int      sort_by;       /* 0=name, 1=size, 2=date */
     int      sort_reverse;
