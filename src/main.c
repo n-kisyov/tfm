@@ -101,12 +101,9 @@ static void render(void) {
     ui_begin_frame();
     ui_hide_cursor();
 
-    /* clear and draw background */
     ui_set_bg(theme_get(&g_app.theme, COLOR_BG));
-    ui_set_fg(theme_get(&g_app.theme, COLOR_BG));
-    for (int i = 0; i < th; i++) {
-        ui_clear_line(i);
-    }
+    ui_clear_screen();
+    ui_reset_colors();
 
     /* ---------- row 0: function-key bar at the top ---------- */
     ui_set_bg(theme_get(&g_app.theme, COLOR_STATUS_BG));
@@ -233,8 +230,12 @@ static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
         }
         g_app.needs_redraw = 1;
         break;
-    case KEY_ESC:
+    case KEY_BACKSPACE:
         panel_go_parent(panel, g_app.fs);
+        g_app.needs_redraw = 1;
+        break;
+    case KEY_ESC:
+        panel_clear_tags(panel);
         g_app.needs_redraw = 1;
         break;
     case KEY_SPACE:
@@ -399,6 +400,10 @@ static void handle_cmdline_input(KeyEvent *ev) {
             cmdline_insert(&g_app.cmdline, ev->ch);
             g_app.needs_redraw = 1;
         }
+        break;
+    case KEY_SPACE:
+        cmdline_insert(&g_app.cmdline, L' ');
+        g_app.needs_redraw = 1;
         break;
     default:
         break;

@@ -2,11 +2,61 @@
 #include "input.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 static HANDLE g_hStdout = NULL;
-static DWORD g_oldOutMode = 0;
-static int   g_termW = 80, g_termH = 24;
-static int   g_frame_begun = 0;
+static DWORD  g_oldOutMode = 0;
+static int    g_termW = 80, g_termH = 24;
+
+static wchar_t *g_buf = NULL;
+static int      g_buf_len = 0;
+static int      g_buf_cap = 0;
+
+static uint32_t g_cur_fg = 0xFFFFFFFF;
+static uint32_t g_cur_bg = 0xFFFFFFFF;
+static int      g_bold = 0;
+static int      g_dim  = 0;
+static int      g_reverse = 0;
+
+static void buf_append(const wchar_t *s, int len) {
+    if (len <= 0) return;
+    if (g_buf_len + len > g_buf_cap) {
+        g_buf_cap = (g_buf_len + len) * 2;
+        g_buf = (wchar_t *)realloc(g_buf, g_buf_cap * sizeof(wchar_t));
+        if (!g_buf) abort();
+    }
+    memcpy(g_buf + g_buf_len, s, len * sizeof(wchar_t));
+    g_buf_len += len;
+}
+
+static void buf_append_str(const wchar_t *s) {
+    if (s) buf_append(s, (int)wcslen(s));
+}
+
+static void buf_fmt(const wchar_t *fmt, ...) {
+    wchar_t tmp[512];
+    va_list ap;
+    va_start(ap, fmt);
+    int len = _vsnwprintf_s(tmp, 512, 511, fmt, ap);
+    va_end(ap);
+    if (len > 0) buf_append(tmp, len);
+}
+
+static void emit_sgr(void) {
+    uint32_t fg = g_cur_fg, bg = g_cur_bg;
+    if (fg == 0xFFFFFFFF && bg == 0xFFFFFFFF && !g_bold && !g_dim && !g_reverse)
+        return;
+
+    buf_append_str(L"\x1b[0");
+    if (fg != 0xFFFFFFFF)
+        buf_fmt(L";38;2;%d;%d;%d", (fg >> 16) & 0xFF, (fg >> 8) & 0xFF, fg & 0xFF);
+    if (bg != 0xFFFFFFFF)
+        buf_fmt(L";48;2;%d;%d;%d", (bg >> 16) & 0xFF, (bg >> 8) & 0xFF, bg & 0xFF);
+    if (g_bold)    buf_append_str(L";1");
+    if (g_dim)     buf_append_str(L";2");
+    if (g_reverse) buf_append_str(L";7");
+    buf_append_str(L"m");
+}
 
 void ui_init(void) {
     g_hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -14,9 +64,6 @@ void ui_init(void) {
 
     GetConsoleMode(g_hStdout, &g_oldOutMode);
     DWORD mode = g_oldOutMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT;
-    SetConsoleMode(g_hStdout, mode);
-
-    /* disable newline auto-return for new console */
     mode |= DISABLE_NEWLINE_AUTO_RETURN;
     SetConsoleMode(g_hStdout, mode);
 
@@ -26,13 +73,17 @@ void ui_init(void) {
         g_termH = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
     }
 
-    /* switch to alternate screen buffer for clean start */
     DWORD written;
-    const char *alt_buf = "\x1b[?1049h\x1b[2J\x1b[H";
-    WriteFile(g_hStdout, alt_buf, (DWORD)strlen(alt_buf), &written, NULL);
+    const char *alt = "\x1b[?1049h\x1b[2J\x1b[H";
+    WriteFile(g_hStdout, alt, (DWORD)strlen(alt), &written, NULL);
 }
 
 void ui_shutdown(void) {
+    free(g_buf);
+    g_buf = NULL;
+    g_buf_cap = 0;
+    g_buf_len = 0;
+
     DWORD written;
     const char *restore = "\x1b[?1049l\x1b[0m";
     WriteFile(g_hStdout, restore, (DWORD)strlen(restore), &written, NULL);
@@ -43,16 +94,25 @@ void ui_shutdown(void) {
 }
 
 void ui_begin_frame(void) {
-    g_frame_begun = 1;
+    g_buf_len = 0;
+    g_cur_fg = 0xFFFFFFFF;
+    g_cur_bg = 0xFFFFFFFF;
+    g_bold = 0;
+    g_dim  = 0;
+    g_reverse = 0;
+
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     if (GetConsoleScreenBufferInfo(g_hStdout, &csbi)) {
         g_termW = csbi.srWindow.Right - csbi.srWindow.Left + 1;
         g_termH = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
     }
+
+    buf_append_str(L"\x1b[H");   /* home cursor for the frame */
 }
 
 void ui_end_frame(void) {
-    g_frame_begun = 0;
+    DWORD written;
+    WriteConsoleW(g_hStdout, g_buf, (DWORD)g_buf_len, &written, NULL);
 }
 
 void ui_get_term_size(int *w, int *h) {
@@ -65,80 +125,56 @@ void ui_get_term_size(int *w, int *h) {
     if (h) *h = g_termH;
 }
 
-static void write_ansi(const char *fmt, ...) {
-    char buf[256];
-    va_list ap;
-    va_start(ap, fmt);
-    int len = vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    if (len > 0) {
-        DWORD written;
-        WriteFile(g_hStdout, buf, (DWORD)len, &written, NULL);
-    }
-}
-
-void ui_set_fg(uint32_t rgb) {
-    write_ansi("\x1b[38;2;%d;%d;%dm", (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
-}
-
-void ui_set_bg(uint32_t rgb) {
-    write_ansi("\x1b[48;2;%d;%d;%dm", (rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
-}
+void ui_set_fg(uint32_t rgb)   { g_cur_fg = rgb; }
+void ui_set_bg(uint32_t rgb)   { g_cur_bg = rgb; }
+void ui_set_bold(void)         { g_bold = 1; }
+void ui_set_dim(void)          { g_dim  = 1; }
+void ui_reverse(void)          { g_reverse = 1; }
 
 void ui_reset_colors(void) {
-    write_ansi("\x1b[0m");
-}
-
-void ui_set_bold(void) {
-    write_ansi("\x1b[1m");
-}
-
-void ui_set_dim(void) {
-    write_ansi("\x1b[2m");
-}
-
-void ui_reverse(void) {
-    write_ansi("\x1b[7m");
+    g_cur_fg = 0xFFFFFFFF;
+    g_cur_bg = 0xFFFFFFFF;
+    g_bold = 0;
+    g_dim  = 0;
+    g_reverse = 0;
 }
 
 void ui_move(int x, int y) {
-    write_ansi("\x1b[%d;%dH", y + 1, x + 1);
+    buf_fmt(L"\x1b[%d;%dH", y + 1, x + 1);
 }
 
 void ui_clear_line(int y) {
     ui_move(0, y);
-    write_ansi("\x1b[2K");
+    buf_append_str(L"\x1b[2K");
 }
 
 void ui_clear_rect(int x, int y, int w, int h) {
+    (void)w;
     for (int i = 0; i < h; i++) {
         ui_move(x, y + i);
-        for (int j = 0; j < w; j++) {
-            write_ansi(" ");
-        }
+        buf_append_str(L"\x1b[K");
     }
 }
 
 void ui_draw_text(int x, int y, const wchar_t *text) {
     if (!text) return;
+    emit_sgr();
     ui_move(x, y);
-    DWORD written;
-    WriteConsoleW(g_hStdout, text, (DWORD)wcslen(text), &written, NULL);
+    buf_append_str(text);
 }
 
 void ui_draw_text_trunc(int x, int y, int max_w, const wchar_t *text) {
     if (!text || max_w <= 0) return;
+    emit_sgr();
     ui_move(x, y);
     int len = (int)wcslen(text);
-    if (len > max_w) {
-        wchar_t buf[512];
-        wcsncpy_s(buf, 512, text, max_w);
-        buf[max_w] = 0;
-        DWORD written;
-        WriteConsoleW(g_hStdout, buf, max_w, &written, NULL);
-    } else {
-        DWORD written;
-        WriteConsoleW(g_hStdout, text, len, &written, NULL);
+    if (len > max_w) len = max_w;
+    buf_append(text, len);
+    /* pad with spaces to clear any previous content */
+    int rem = max_w - len;
+    while (rem > 0) {
+        buf_append_str(L" ");
+        rem--;
     }
 }
 
@@ -151,16 +187,16 @@ void ui_draw_text_centered(int y, int max_w, const wchar_t *text) {
 }
 
 void ui_draw_char(int x, int y, wchar_t ch) {
+    emit_sgr();
     ui_move(x, y);
-    DWORD written;
-    WriteConsoleW(g_hStdout, &ch, 1, &written, NULL);
+    buf_append(&ch, 1);
 }
 
 void ui_draw_h_line(int x, int y, int w, wchar_t ch) {
+    emit_sgr();
     ui_move(x, y);
     for (int i = 0; i < w; i++) {
-        DWORD written;
-        WriteConsoleW(g_hStdout, &ch, 1, &written, NULL);
+        buf_append(&ch, 1);
     }
 }
 
@@ -172,36 +208,30 @@ void ui_draw_v_line(int x, int y, int h, wchar_t ch) {
 
 void ui_draw_rect(int x, int y, int w, int h) {
     if (w < 2 || h < 2) return;
-    /* corners */
-    ui_draw_char(x, y, L'┌');
-    ui_draw_char(x + w - 1, y, L'┐');
-    ui_draw_char(x, y + h - 1, L'└');
-    ui_draw_char(x + w - 1, y + h - 1, L'┘');
-    /* top and bottom */
-    ui_draw_h_line(x + 1, y, w - 2, L'─');
-    ui_draw_h_line(x + 1, y + h - 1, w - 2, L'─');
-    /* sides */
-    ui_draw_v_line(x, y + 1, h - 2, L'│');
-    ui_draw_v_line(x + w - 1, y + 1, h - 2, L'│');
+    ui_draw_char(x, y, L'\x250c');           /* corner top-left */
+    ui_draw_char(x + w - 1, y, L'\x2510');   /* corner top-right */
+    ui_draw_char(x, y + h - 1, L'\x2514');   /* corner bottom-left */
+    ui_draw_char(x + w - 1, y + h - 1, L'\x2518'); /* corner bottom-right */
+    ui_draw_h_line(x + 1, y, w - 2, L'\x2500');     /* top */
+    ui_draw_h_line(x + 1, y + h - 1, w - 2, L'\x2500'); /* bottom */
+    ui_draw_v_line(x, y + 1, h - 2, L'\x2502');       /* left */
+    ui_draw_v_line(x + w - 1, y + 1, h - 2, L'\x2502'); /* right */
 }
 
 void ui_draw_rect_content(int x, int y, int w, int h) {
-    /* same as draw_rect but fills interior with spaces */
     if (w < 2 || h < 2) return;
-    ui_draw_char(x, y, L'┌');
-    ui_draw_char(x + w - 1, y, L'┐');
-    ui_draw_char(x, y + h - 1, L'└');
-    ui_draw_char(x + w - 1, y + h - 1, L'┘');
-    ui_draw_h_line(x + 1, y, w - 2, L'─');
-    ui_draw_h_line(x + 1, y + h - 1, w - 2, L'─');
-    ui_draw_v_line(x, y + 1, h - 2, L'│');
-    ui_draw_v_line(x + w - 1, y + 1, h - 2, L'│');
-    /* fill interior */
+    ui_draw_char(x, y, L'\x250c');
+    ui_draw_char(x + w - 1, y, L'\x2510');
+    ui_draw_char(x, y + h - 1, L'\x2514');
+    ui_draw_char(x + w - 1, y + h - 1, L'\x2518');
+    ui_draw_h_line(x + 1, y, w - 2, L'\x2500');
+    ui_draw_h_line(x + 1, y + h - 1, w - 2, L'\x2500');
+    ui_draw_v_line(x, y + 1, h - 2, L'\x2502');
+    ui_draw_v_line(x + w - 1, y + 1, h - 2, L'\x2502');
     for (int i = 1; i < h - 1; i++) {
         ui_move(x + 1, y + i);
         for (int j = 0; j < w - 2; j++) {
-            DWORD w2;
-            WriteConsoleW(g_hStdout, L" ", 1, &w2, NULL);
+            buf_append_str(L" ");
         }
     }
 }
@@ -213,12 +243,17 @@ void ui_fill_rect(int x, int y, int w, int h, wchar_t ch) {
 }
 
 void ui_hide_cursor(void) {
-    write_ansi("\x1b[?25l");
+    buf_append_str(L"\x1b[?25l");
 }
 
 void ui_show_cursor(int x, int y) {
     ui_move(x, y);
-    write_ansi("\x1b[?25h");
+    buf_append_str(L"\x1b[?25h");
+}
+
+void ui_clear_screen(void) {
+    emit_sgr();
+    buf_append_str(L"\x1b[2J");
 }
 
 void ui_message_box(const Theme *theme, const wchar_t *title, const wchar_t *msg) {
@@ -232,25 +267,31 @@ void ui_message_box(const Theme *theme, const wchar_t *title, const wchar_t *msg
     int bx = (tw - bw) / 2;
     int by = (th - bh) / 2;
 
-    ui_hide_cursor();
-    ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
-    ui_set_fg(theme_get(theme, COLOR_FILE));
-    ui_draw_rect_content(bx, by, bw, bh);
-    ui_set_fg(theme_get(theme, COLOR_DIALOG_BORDER));
-    ui_draw_rect(bx, by, bw, bh);
-    ui_set_fg(theme_get(theme, COLOR_SELECTED_FG));
-    ui_draw_text(bx + 2, by + 1, title);
-    ui_set_fg(theme_get(theme, COLOR_FILE));
-    ui_draw_text(bx + 2, by + 2, msg);
-    ui_set_fg(theme_get(theme, COLOR_DIALOG_BORDER));
-    ui_draw_text_centered(by + bh - 2, bw, L"Press any key to continue...");
-    ui_reset_colors();
+    while (1) {
+        ui_begin_frame();
 
-    /* wait for key */
-    KeyEvent ev;
-    while (input_poll(&ev)) {
-        if (ev.code && ev.code != KEY_RESIZE) break;
+        ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+        ui_set_fg(theme_get(theme, COLOR_FILE));
+        ui_draw_rect_content(bx, by, bw, bh);
+        ui_set_fg(theme_get(theme, COLOR_DIALOG_BORDER));
+        ui_draw_rect(bx, by, bw, bh);
+        ui_set_fg(theme_get(theme, COLOR_SELECTED_FG));
+        ui_draw_text(bx + 2, by + 1, title);
+        ui_set_fg(theme_get(theme, COLOR_FILE));
+        ui_draw_text(bx + 2, by + 2, msg);
+        ui_set_fg(theme_get(theme, COLOR_DIALOG_BORDER));
+        ui_draw_text_centered(by + bh - 2, bw, L"Press any key to continue...");
+        ui_reset_colors();
+
+        ui_end_frame();
+
+        KeyEvent ev;
+        while (input_poll(&ev)) {
+            if (ev.code && ev.code != KEY_RESIZE) goto msg_done;
+        }
     }
+msg_done:
+    ;
 }
 
 int ui_confirm_dialog(const Theme *theme, const wchar_t *title, const wchar_t *msg) {
@@ -264,10 +305,11 @@ int ui_confirm_dialog(const Theme *theme, const wchar_t *title, const wchar_t *m
     int bx = (tw - bw) / 2;
     int by = (th - bh) / 2;
 
-    int selected = 1; /* 1 = yes, 0 = no */
+    int selected = 1;
 
     while (1) {
-        ui_hide_cursor();
+        ui_begin_frame();
+
         ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
         ui_set_fg(theme_get(theme, COLOR_FILE));
         ui_draw_rect_content(bx, by, bw, bh);
@@ -304,6 +346,7 @@ int ui_confirm_dialog(const Theme *theme, const wchar_t *title, const wchar_t *m
             ui_reset_colors();
         }
         ui_reset_colors();
+        ui_end_frame();
 
         KeyEvent ev;
         while (input_poll(&ev)) {
@@ -312,16 +355,13 @@ int ui_confirm_dialog(const Theme *theme, const wchar_t *title, const wchar_t *m
                 selected = !selected;
                 break;
             }
-            if (ev.code == KEY_ENTER) {
-                return selected;
-            }
-            if (ev.code == KEY_ESC) {
-                return 0;
-            }
+            if (ev.code == KEY_ENTER) return selected;
+            if (ev.code == KEY_ESC) return 0;
             if (ev.code == KEY_CHAR) {
                 if (ev.ch == L'y' || ev.ch == L'Y') return 1;
                 if (ev.ch == L'n' || ev.ch == L'N') return 0;
             }
+            if (ev.code == KEY_SPACE) break;
             break;
         }
     }
@@ -341,8 +381,10 @@ int ui_input_dialog(const Theme *theme, const wchar_t *title, wchar_t *buf, int 
     int len = 0;
 
     while (1) {
-        ui_hide_cursor();
+        ui_begin_frame();
+
         ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+        ui_set_fg(theme_get(theme, COLOR_FILE));
         ui_draw_rect_content(bx, by, bw, bh);
         ui_set_fg(theme_get(theme, COLOR_DIALOG_BORDER));
         ui_draw_rect(bx, by, bw, bh);
@@ -353,21 +395,19 @@ int ui_input_dialog(const Theme *theme, const wchar_t *title, wchar_t *buf, int 
         ui_draw_text(bx + 2, by + 1, title);
         ui_reset_colors();
 
-        /* input area */
-        int in_w = bw - 6;
         ui_set_bg(theme_get(theme, COLOR_BG));
         ui_set_fg(theme_get(theme, COLOR_CMDLINE));
-        ui_draw_h_line(bx + 2, by + 2, in_w + 2, L' ');
+        ui_draw_h_line(bx + 2, by + 2, bw - 4, L' ');
         ui_move(bx + 3, by + 2);
-        DWORD w2;
-        WriteConsoleW(g_hStdout, buf, len, &w2, NULL);
+        emit_sgr();
+        buf_append(buf, len);
 
-        /* cursor highlight */
         if (cursor < len) {
             ui_move(bx + 3 + cursor, by + 2);
             ui_set_bg(theme_get(theme, COLOR_SELECTED_BG));
             ui_set_fg(theme_get(theme, COLOR_SELECTED_FG));
-            WriteConsoleW(g_hStdout, &buf[cursor], 1, &w2, NULL);
+            emit_sgr();
+            buf_append(&buf[cursor], 1);
         }
         ui_reset_colors();
 
@@ -375,6 +415,8 @@ int ui_input_dialog(const Theme *theme, const wchar_t *title, wchar_t *buf, int 
         ui_set_fg(theme_get(theme, COLOR_DIALOG_BORDER));
         ui_draw_text_centered(by + bh - 2, bw, L"Enter=confirm  Esc=cancel");
         ui_reset_colors();
+
+        ui_end_frame();
 
         KeyEvent ev;
         while (input_poll(&ev)) {
@@ -398,6 +440,12 @@ int ui_input_dialog(const Theme *theme, const wchar_t *title, wchar_t *buf, int 
             if (ev.code == KEY_CHAR && ev.ch >= 32 && len < buf_len - 1) {
                 memmove(buf + cursor + 1, buf + cursor, (len - cursor + 1) * sizeof(wchar_t));
                 buf[cursor] = ev.ch;
+                cursor++; len++;
+                break;
+            }
+            if (ev.code == KEY_SPACE && len < buf_len - 1) {
+                memmove(buf + cursor + 1, buf + cursor, (len - cursor + 1) * sizeof(wchar_t));
+                buf[cursor] = L' ';
                 cursor++; len++;
                 break;
             }

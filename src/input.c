@@ -13,10 +13,7 @@ int input_init(void) {
 
     if (!GetConsoleMode(g_hStdin, &g_oldMode)) return -1;
 
-    DWORD mode = g_oldMode;
-    mode &= ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT |
-              ENABLE_MOUSE_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT);
-    mode |= ENABLE_PROCESSED_INPUT | ENABLE_WINDOW_INPUT;
+    DWORD mode = ENABLE_WINDOW_INPUT;
     if (!SetConsoleMode(g_hStdin, mode)) return -1;
 
     CONSOLE_SCREEN_BUFFER_INFO csbi;

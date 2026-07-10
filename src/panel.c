@@ -328,11 +328,9 @@ void panel_render(const Panel *p, const Theme *theme, int x, int y, int w, int h
         ui_move(rx, ry);
 
         if (ei >= p->entry_count) {
-            /* empty line */
             ui_set_bg(theme_get(theme, COLOR_BG));
             ui_set_fg(theme_get(theme, COLOR_BG));
-            DWORD w2;
-            for (int j = 0; j < w - 2; j++) WriteConsoleW(GetStdHandle(STD_OUTPUT_HANDLE), L" ", 1, &w2, NULL);
+            ui_draw_h_line(rx, ry, w - 2, L' ');
             ui_reset_colors();
             continue;
         }

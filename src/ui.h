@@ -37,6 +37,7 @@ void ui_fill_rect(int x, int y, int w, int h, wchar_t ch);
 
 void ui_hide_cursor(void);
 void ui_show_cursor(int x, int y);
+void ui_clear_screen(void);
 
 void ui_message_box(const Theme *theme, const wchar_t *title, const wchar_t *msg);
 int  ui_confirm_dialog(const Theme *theme, const wchar_t *title, const wchar_t *msg);

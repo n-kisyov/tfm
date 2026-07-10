@@ -214,16 +214,14 @@ void cmdline_render(const CmdLine *c, const Theme *theme, int x, int y, int w, i
 
     /* cursor */
     if (focused) {
-        ui_move(x + 2 + c->cursor, y);
-        DWORD written;
         if (c->cursor < c->length) {
             ui_set_bg(theme_get(theme, COLOR_SELECTED_BG));
             ui_set_fg(theme_get(theme, COLOR_SELECTED_FG));
-            WriteConsoleW(GetStdHandle(STD_OUTPUT_HANDLE), &c->buffer[c->cursor], 1, &written, NULL);
+            ui_draw_char(x + 2 + c->cursor, y, c->buffer[c->cursor]);
         } else {
             ui_reset_colors();
             ui_set_bg(theme_get(theme, COLOR_CMDLINE));
-            WriteConsoleW(GetStdHandle(STD_OUTPUT_HANDLE), L" ", 1, &written, NULL);
+            ui_draw_char(x + 2 + c->cursor, y, L' ');
         }
     }
     ui_reset_colors();
