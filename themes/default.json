@@ -1,0 +1,26 @@
+{
+  "name": "Default Dark",
+  "colors": {
+    "bg":              "#1E1E2E",
+    "panel_border":    "#45475A",
+    "focus_border":    "#89B4FA",
+    "tab_active":      "#89B4FA",
+    "tab_inactive":    "#585B70",
+    "tab_active_bg":   "#313244",
+    "dir":             "#89B4FA",
+    "file":            "#CDD6F4",
+    "symlink":         "#A6E3A1",
+    "selected_bg":     "#313244",
+    "selected_fg":     "#CDD6F4",
+    "tagged":          "#F9E2AF",
+    "tagged_bg":       "#45475A",
+    "status_bar":      "#45475A",
+    "status_bg":       "#45475A",
+    "status_fg":       "#CDD6F4",
+    "cmdline":         "#CDD6F4",
+    "dialog_border":   "#FAB387",
+    "dialog_bg":       "#313244",
+    "error":           "#F38BA8",
+    "progress":        "#A6E3A1"
+  }
+}
