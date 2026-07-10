@@ -14,13 +14,10 @@ int input_init(void) {
     if (!GetConsoleMode(g_hStdin, &g_oldMode)) return -1;
 
     DWORD mode = g_oldMode;
-    mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
-    mode |= ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS;
+    mode &= ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT |
+              ENABLE_MOUSE_INPUT | ENABLE_VIRTUAL_TERMINAL_INPUT);
+    mode |= ENABLE_PROCESSED_INPUT | ENABLE_WINDOW_INPUT;
     if (!SetConsoleMode(g_hStdin, mode)) return -1;
-
-    /* enable virtual terminal for input too */
-    mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
-    SetConsoleMode(g_hStdin, mode);
 
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {

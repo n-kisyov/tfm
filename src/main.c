@@ -94,8 +94,9 @@ static void shutdown_app(void) {
 static void render(void) {
     int tw = g_app.tw, th = g_app.th;
     int lw = g_app.left_w;
-    int panel_h = th - 3; /* leaves 1 row for status bar, 1 for cmdline, 1 for... */
-    if (panel_h < 6) panel_h = 6;
+    int panel_start_y = 1;       /* row 0 = function key bar */
+    int panel_h = th - 2;        /* panels fill rows 1..th-2, cmdline on th-1 */
+    if (panel_h < 6) { panel_h = 6; }
 
     ui_begin_frame();
     ui_hide_cursor();
@@ -107,40 +108,33 @@ static void render(void) {
         ui_clear_line(i);
     }
 
-    /* left panel */
-    panel_render(&g_app.panels[0], &g_app.theme, 0, 0, lw, panel_h,
-                 g_app.focus == FOCUS_LEFT);
-
-    /* right panel */
-    panel_render(&g_app.panels[1], &g_app.theme, lw, 0, tw - lw, panel_h,
-                 g_app.focus == FOCUS_RIGHT);
-
-    /* status bar (function key bar) */
-    int sb_y = panel_h;
+    /* ---------- row 0: function-key bar at the top ---------- */
     ui_set_bg(theme_get(&g_app.theme, COLOR_STATUS_BG));
     ui_set_fg(theme_get(&g_app.theme, COLOR_STATUS_FG));
-    ui_fill_rect(0, sb_y, tw, 1, L' ');
+    ui_fill_rect(0, 0, tw, 1, L' ');
 
-    const wchar_t *keybar = L" 2Refr  3View  4Edit  5Copy  6Move  7Mkdir  8Del  10Quit";
-    ui_draw_text(0, sb_y, keybar);
-
-    /* show tagged count if any */
     int total_tagged = g_app.panels[0].tagged_count + g_app.panels[1].tagged_count;
-    if (total_tagged > 0) {
-        wchar_t tag_info[32];
-        swprintf_s(tag_info, 32, L" [%d \u2714]", total_tagged);
-        ui_draw_text(tw - 15, sb_y, tag_info);
-    } else {
-        ui_draw_text(tw - 8, sb_y, L"");
-    }
+    const wchar_t *keybar_fmt = total_tagged > 0
+        ? L" F2Refresh  F3View  F4Edit  F5Copy  F6Move  F7Mkdir  F8Delete  F10Quit   Tagged:%d"
+        : L" F2Refresh  F3View  F4Edit  F5Copy  F6Move  F7Mkdir  F8Delete  F10Quit";
+    wchar_t keybar[256];
+    if (total_tagged > 0)
+        swprintf_s(keybar, 256, keybar_fmt, total_tagged);
+    else
+        wcscpy_s(keybar, 256, keybar_fmt);
+    ui_draw_text_trunc(0, 0, tw, keybar);
 
-    /* command line */
-    int cmd_y = sb_y + 1;
-    if (cmd_y >= th) cmd_y = th - 1;
+    /* ---------- panels ---------- */
+    panel_render(&g_app.panels[0], &g_app.theme, 0, panel_start_y, lw, panel_h,
+                 g_app.focus == FOCUS_LEFT);
+    panel_render(&g_app.panels[1], &g_app.theme, lw, panel_start_y, tw - lw, panel_h,
+                 g_app.focus == FOCUS_RIGHT);
+
+    /* ---------- command line (bottom row) ---------- */
+    int cmd_y = th - 1;
     cmdline_render(&g_app.cmdline, &g_app.theme, 0, cmd_y, tw,
                    g_app.focus == FOCUS_CMDLINE);
 
-    /* show cursor */
     if (g_app.focus == FOCUS_CMDLINE) {
         ui_show_cursor(2 + g_app.cmdline.cursor, cmd_y);
     }
@@ -413,10 +407,9 @@ static void handle_cmdline_input(KeyEvent *ev) {
 
 static int panel_h_for(int idx) {
     (void)idx;
-    int panel_h = g_app.th - 3;
+    int panel_h = g_app.th - 2;
     if (panel_h < 6) panel_h = 6;
-    /* subtract tab bar, path, borders = 4 rows overhead */
-    return panel_h - 4;
+    return panel_h - 5;
 }
 
 int main(void) {

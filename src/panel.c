@@ -310,9 +310,8 @@ void panel_render(const Panel *p, const Theme *theme, int x, int y, int w, int h
     ui_draw_text_trunc(x + 2, y + 2, w - 4, tab->path);
     ui_reset_colors();
 
-    /* file list area */
     int list_start_y = y + 3;
-    int list_h = h - 4; /* minus tab bar, path line, and status bar row */
+    int list_h = h - 5; /* overhead: top-border + tab-bar + path + status + bottom-border = 5 */
     if (list_h < 1) list_h = 1;
 
     /* adjust scroll to keep cursor visible */
