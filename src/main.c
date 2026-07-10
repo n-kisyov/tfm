@@ -448,10 +448,11 @@ static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
         break;
     }
     case KEY_F7: {
-        wchar_t new_name[256];
-        ops_mkdir_dialog(panel_current_path(panel), &g_app.theme, g_app.fs, new_name, 256);
+        wchar_t new_name[256] = {0};
+        int created = ops_mkdir_dialog(panel_current_path(panel), &g_app.theme, g_app.fs, new_name, 256);
         panel_refresh(panel, g_app.fs);
         g_app.needs_redraw = 1;
+        (void)created;
         break;
     }
     case KEY_F8: {

@@ -352,7 +352,11 @@ void ui_message_box(const Theme *theme, const wchar_t *title, const wchar_t *msg
         ui_set_fg(theme_get(theme, COLOR_FILE));
         ui_draw_text(bx + 2, by + 2, msg);
         ui_set_fg(theme_get(theme, COLOR_DIALOG_BORDER));
-        ui_draw_text_centered(by + bh - 2, bw, L"Press any key to continue...");
+        {
+            const wchar_t *ft = L"Press any key to continue...";
+            int fl = (int)wcslen(ft);
+            ui_draw_text(bx + (bw - fl) / 2, by + bh - 2, ft);
+        }
         ui_reset_colors();
 
         ui_end_frame();
@@ -493,7 +497,11 @@ int ui_input_dialog(const Theme *theme, const wchar_t *title, wchar_t *buf, int 
 
         ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
         ui_set_fg(theme_get(theme, COLOR_DIALOG_BORDER));
-        ui_draw_text_centered(by + bh - 2, bw, L"Enter=confirm  Esc=cancel");
+        {
+            const wchar_t *ft = L"Enter=confirm  Esc=cancel";
+            int fl = (int)wcslen(ft);
+            ui_draw_text(bx + (bw - fl) / 2, by + bh - 2, ft);
+        }
         ui_reset_colors();
 
         ui_end_frame();
