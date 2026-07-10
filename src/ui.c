@@ -265,9 +265,14 @@ void ui_draw_history(const Theme *theme, int tw, int th,
                      const void *hist_v, int hist_count,
                      int show_current) {
     /* avoid including bgop.h — we only need a few known fields */
-    typedef struct { int op_type, total_items; volatile LONG done_items, visible, active;
-                     wchar_t current_file[260], title[64]; DWORD start_ticks; } Bt;
-    typedef struct { int op_type, total, done, status; wchar_t desc[128]; } Hr;
+    typedef struct {
+        volatile LONG active, finished, visible, error;
+        int op_type, total_items;
+        volatile LONG done_items;
+        wchar_t current_file[260], title[64];
+        DWORD start_ticks;
+    } Bt;
+    typedef struct { int op_type, total, done; wchar_t desc[128]; int status; } Hr;
     const Bt *bt = (const Bt *)bgtask_v;
     const Hr *hist = (const Hr *)hist_v;
 

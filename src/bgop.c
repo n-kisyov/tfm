@@ -140,8 +140,8 @@ static unsigned int __stdcall bg_thread_copy(void *param) {
         free(dest);
     }
 
-    InterlockedExchange(&t->active, 0);
     InterlockedExchange(&t->finished, 1);
+    InterlockedExchange(&t->active, 0);
     return 0;
 }
 
@@ -177,8 +177,8 @@ static unsigned int __stdcall bg_thread_move(void *param) {
         free(dest);
     }
 
-    InterlockedExchange(&t->active, 0);
     InterlockedExchange(&t->finished, 1);
+    InterlockedExchange(&t->active, 0);
     return 0;
 }
 
@@ -204,8 +204,8 @@ static unsigned int __stdcall bg_thread_delete(void *param) {
         update_progress(t, name);
     }
 
-    InterlockedExchange(&t->active, 0);
     InterlockedExchange(&t->finished, 1);
+    InterlockedExchange(&t->active, 0);
     return 0;
 }
 

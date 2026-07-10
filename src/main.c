@@ -250,14 +250,10 @@ static void render(void) {
 
     /* ---------- progress/history overlay ---------- */
     if ((bgop_is_active(&g_app.bgtask) && g_app.bgtask.visible) || g_app.history_visible) {
-        int items = g_app.history_count;
-        if (bgop_is_active(&g_app.bgtask) && g_app.bgtask.visible) items++;
-        if (items > 0) {
-            ui_draw_history(&g_app.theme, tw, th,
-                            &g_app.bgtask,
-                            g_app.history, g_app.history_count,
-                            bgop_is_active(&g_app.bgtask) && g_app.bgtask.visible);
-        }
+        ui_draw_history(&g_app.theme, tw, th,
+                        &g_app.bgtask,
+                        g_app.history, g_app.history_count,
+                        bgop_is_active(&g_app.bgtask) && g_app.bgtask.visible);
     }
 
     /* ---------- command line (bottom row) ---------- */
