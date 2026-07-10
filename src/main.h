@@ -8,6 +8,7 @@
 #include "config.h"
 #include "input.h"
 #include "fs.h"
+#include "bgop.h"
 
 typedef enum {
     FOCUS_LEFT,
@@ -25,7 +26,9 @@ typedef struct {
     int         tw, th;
     int         left_w;
     int         needs_redraw;
+    int         show_help;
     const FsProvider *fs;
+    BgTask      bgtask;
 } AppState;
 
 extern AppState g_app;

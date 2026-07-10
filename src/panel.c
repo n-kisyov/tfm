@@ -68,6 +68,10 @@ void panel_enter_dir(Panel *p, const FsProvider *fs) {
         wcscpy_s(tab->path, 520, new_path);
         wcsncpy_s(tab->display_name, 32, e->name, 31);
         free(new_path);
+        /* remember drive path */
+        wchar_t drive = towupper(tab->path[0]);
+        if (drive >= L'A' && drive <= L'Z')
+            wcscpy_s(p->drive_paths[drive - L'A'], 520, tab->path);
         tab->cursor = 0;
         tab->scroll_offset = 0;
         panel_refresh(p, fs);
@@ -75,7 +79,9 @@ void panel_enter_dir(Panel *p, const FsProvider *fs) {
 }
 
 void panel_go_parent(Panel *p, const FsProvider *fs) {
+    if (p->in_drive_list) { panel_exit_drives(p, fs); return; }
     PanelTab *tab = &p->tabs[p->active_tab];
+    if (is_root_path(tab->path)) { panel_go_drives(p, fs); return; }
     wchar_t *parent = get_parent_path(tab->path);
     wcscpy_s(tab->path, 520, parent);
     const wchar_t *name = wcsrchr(parent, L'\\');
@@ -83,6 +89,107 @@ void panel_go_parent(Panel *p, const FsProvider *fs) {
     if (name[0] == L'\\') name++;
     wcsncpy_s(tab->display_name, 32, name && name[0] ? name : parent, 31);
     free(parent);
+    wchar_t drive = towupper(tab->path[0]);
+    if (drive >= L'A' && drive <= L'Z')
+        wcscpy_s(p->drive_paths[drive - L'A'], 520, tab->path);
+    tab->cursor = 0;
+    tab->scroll_offset = 0;
+    panel_refresh(p, fs);
+}
+
+void panel_go_drives(Panel *p, const FsProvider *fs) {
+    if (p->in_drive_list) {
+        panel_exit_drives(p, fs);
+        return;
+    }
+    PanelTab *tab = &p->tabs[p->active_tab];
+    (void)fs;
+
+    /* save current path for current drive letter */
+    wchar_t drive = towupper(tab->path[0]);
+    if (drive >= L'A' && drive <= L'Z')
+        wcscpy_s(p->drive_paths[drive - L'A'], 520, tab->path);
+
+    /* save current entries to restore later */
+    p->saved_entry_count = p->entry_count;
+    p->saved_cursor = tab->cursor;
+    wcscpy_s(p->saved_path, 520, tab->path);
+    if (p->saved_entry_count > 0 && p->saved_entry_count <= 4096)
+        memcpy(p->saved_entries, p->entries, p->saved_entry_count * sizeof(FileEntry));
+
+    /* build drive list */
+    free(p->entries);
+    p->entries = (FileEntry *)calloc(26 + 1, sizeof(FileEntry));
+    p->entry_count = 0;
+    p->in_drive_list = 1;
+
+    DWORD drives = GetLogicalDrives();
+    for (int i = 0; i < 26; i++) {
+        if (drives & (1 << i)) {
+            wchar_t dl = (wchar_t)(L'A' + i);
+            if (p->drive_paths[i][0]) {
+                swprintf_s(p->entries[p->entry_count].name, 256,
+                           L"%c:\\    (%s)", dl, p->drive_paths[i]);
+            } else {
+                swprintf_s(p->entries[p->entry_count].name, 256, L"%c:\\", dl);
+            }
+            p->entries[p->entry_count].type = ENTRY_DIR;
+            p->entry_count++;
+        }
+    }
+
+    tab->cursor = 0;
+    tab->scroll_offset = 0;
+    wcscpy_s(tab->path, 520, L"Drives");
+    wcsncpy_s(tab->display_name, 32, L"Drives", 31);
+    p->dirty = 1;
+}
+
+void panel_exit_drives(Panel *p, const FsProvider *fs) {
+    (void)fs;
+    PanelTab *tab = &p->tabs[p->active_tab];
+    free(p->entries);
+    p->in_drive_list = 0;
+
+    /* restore saved entries */
+    p->entry_count = p->saved_entry_count;
+    wcscpy_s(tab->path, 520, p->saved_path);
+    const wchar_t *nm = wcsrchr(p->saved_path, L'\\');
+    wcsncpy_s(tab->display_name, 32, nm ? nm + 1 : p->saved_path, 31);
+
+    if (p->saved_entry_count > 0) {
+        p->entries = (FileEntry *)calloc(p->saved_entry_count, sizeof(FileEntry));
+        memcpy(p->entries, p->saved_entries, p->saved_entry_count * sizeof(FileEntry));
+        tab->cursor = p->saved_cursor;
+    } else {
+        p->entries = NULL;
+        tab->cursor = 0;
+    }
+    tab->scroll_offset = 0;
+    p->dirty = 1;
+}
+
+void panel_enter_on_drive(Panel *p, const FsProvider *fs) {
+    PanelTab *tab = &p->tabs[p->active_tab];
+    if (!p->in_drive_list || p->entry_count == 0) return;
+    FileEntry *e = &p->entries[tab->cursor];
+    wchar_t drive_letter = towupper(e->name[0]);
+
+    p->in_drive_list = 0;
+    free(p->entries);
+    p->entries = NULL;
+    p->entry_count = 0;
+
+    if (p->drive_paths[drive_letter - L'A'][0] &&
+        fs->exists(p->drive_paths[drive_letter - L'A']) &&
+        fs->is_dir(p->drive_paths[drive_letter - L'A'])) {
+        wcscpy_s(tab->path, 520, p->drive_paths[drive_letter - L'A']);
+    } else {
+        swprintf_s(tab->path, 520, L"%c:\\", drive_letter);
+        p->drive_paths[drive_letter - L'A'][0] = 0; /* clear invalid path */
+    }
+    const wchar_t *nm = wcsrchr(tab->path, L'\\');
+    wcsncpy_s(tab->display_name, 32, nm ? nm + 1 : tab->path, 31);
     tab->cursor = 0;
     tab->scroll_offset = 0;
     panel_refresh(p, fs);
@@ -266,7 +373,14 @@ void panel_render(const Panel *p, const Theme *theme, int x, int y, int w, int h
 
     PanelTab *tab = (PanelTab *)&p->tabs[p->active_tab];
 
-    /* panel border */
+    /* fill the entire panel area (including border cells) with background */
+    ui_set_bg(theme_get(theme, COLOR_BG));
+    for (int iy = 0; iy < h; iy++) {
+        ui_draw_h_line(x, y + iy, w, L' ');
+    }
+
+    /* panel border drawn on top of fill, with explicit background */
+    ui_set_bg(theme_get(theme, COLOR_BG));
     ui_set_fg(border_color);
     ui_draw_rect(x, y, w, h);
 
@@ -305,14 +419,19 @@ void panel_render(const Panel *p, const Theme *theme, int x, int y, int w, int h
 
     /* path display line (y+2) */
     ui_set_bg(theme_get(theme, COLOR_BG));
-    ui_set_fg(theme_get(theme, COLOR_FILE));
-    ui_set_dim();
-    ui_draw_text_trunc(x + 2, y + 2, w - 4, tab->path);
+    if (p->in_drive_list) {
+        ui_set_fg(theme_get(theme, COLOR_FOCUS_BORDER));
+        ui_set_bold();
+        ui_draw_text_trunc(x + 2, y + 2, w - 4, L"\x25b6 Select Drive (Enter=switch  Esc=back)");
+    } else {
+        ui_set_fg(theme_get(theme, COLOR_FILE));
+        ui_set_dim();
+        ui_draw_text_trunc(x + 2, y + 2, w - 4, tab->path);
+    }
     ui_reset_colors();
 
-    /* file list area */
     int list_start_y = y + 3;
-    int list_h = h - 4; /* minus tab bar, path line, and status bar row */
+    int list_h = h - 5; /* overhead: top-border + tab-bar + path + status + bottom-border = 5 */
     if (list_h < 1) list_h = 1;
 
     /* adjust scroll to keep cursor visible */
@@ -329,11 +448,9 @@ void panel_render(const Panel *p, const Theme *theme, int x, int y, int w, int h
         ui_move(rx, ry);
 
         if (ei >= p->entry_count) {
-            /* empty line */
             ui_set_bg(theme_get(theme, COLOR_BG));
             ui_set_fg(theme_get(theme, COLOR_BG));
-            DWORD w2;
-            for (int j = 0; j < w - 2; j++) WriteConsoleW(GetStdHandle(STD_OUTPUT_HANDLE), L" ", 1, &w2, NULL);
+            ui_draw_h_line(rx, ry, w - 2, L' ');
             ui_reset_colors();
             continue;
         }

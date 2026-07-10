@@ -3,6 +3,7 @@
 
 #include <wchar.h>
 #include <stdint.h>
+#include <windows.h>
 #include "theme.h"
 
 typedef struct {
@@ -37,6 +38,10 @@ void ui_fill_rect(int x, int y, int w, int h, wchar_t ch);
 
 void ui_hide_cursor(void);
 void ui_show_cursor(int x, int y);
+void ui_clear_screen(void);
+void ui_draw_progress(const Theme *theme, int tw, int th,
+                      int done, int total, const wchar_t *title,
+                      const wchar_t *file, DWORD elapsed_ms);
 
 void ui_message_box(const Theme *theme, const wchar_t *title, const wchar_t *msg);
 int  ui_confirm_dialog(const Theme *theme, const wchar_t *title, const wchar_t *msg);

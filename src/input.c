@@ -13,14 +13,8 @@ int input_init(void) {
 
     if (!GetConsoleMode(g_hStdin, &g_oldMode)) return -1;
 
-    DWORD mode = g_oldMode;
-    mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
-    mode |= ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS;
+    DWORD mode = ENABLE_WINDOW_INPUT;
     if (!SetConsoleMode(g_hStdin, mode)) return -1;
-
-    /* enable virtual terminal for input too */
-    mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
-    SetConsoleMode(g_hStdin, mode);
 
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
@@ -73,12 +67,15 @@ static KeyCode map_vk(WORD vk, DWORD ctrl) {
     case VK_F8:  return KEY_F8;
     case VK_F9:  return KEY_F9;
     case VK_F10: return KEY_F10;
+    case VK_F11: return KEY_F11;
+    case VK_F12: return KEY_F12;
     default:
         if (ctrl_pressed && !alt) {
             if (vk == L'T') return KEY_CTRL_T;
             if (vk == L'W') return KEY_CTRL_W;
             if (vk == L'C') return KEY_CTRL_C;
             if (vk == L'R') return KEY_CTRL_R;
+            if (vk == L'D') return KEY_CTRL_D;
         }
         return KEY_CHAR;
     }
@@ -122,10 +119,57 @@ int input_poll(KeyEvent *ev) {
             if (kc == KEY_CHAR && ke->uChar.UnicodeChar) {
                 ev->ch = ke->uChar.UnicodeChar;
             }
-            /* Also capture wide chars when we get KEY_CHAR from vk */
             if (kc != KEY_CHAR || ev->ch) {
                 return 1;
             }
+        }
+    }
+}
+
+int input_poll_timeout(KeyEvent *ev, DWORD timeout_ms) {
+    if (!g_initialized) return 0;
+    memset(ev, 0, sizeof(KeyEvent));
+
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
+        int w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        int h = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+        if (w != g_lastW || h != g_lastH) {
+            g_lastW = w;
+            g_lastH = h;
+            ev->code = KEY_RESIZE;
+            return 1;
+        }
+    }
+
+    if (WaitForSingleObject(g_hStdin, timeout_ms) == WAIT_TIMEOUT)
+        return 0;
+
+    INPUT_RECORD rec;
+    DWORD read = 0;
+    /* non-blocking drain — read all pending events, return the first valid one */
+    while (1) {
+        DWORD pending = 0;
+        if (!GetNumberOfConsoleInputEvents(g_hStdin, &pending) || pending == 0)
+            return 0;
+        if (!ReadConsoleInputW(g_hStdin, &rec, 1, &read)) return 0;
+        if (read == 0) return 0;
+
+        if (rec.EventType == WINDOW_BUFFER_SIZE_EVENT) {
+            g_lastW = rec.Event.WindowBufferSizeEvent.dwSize.X;
+            g_lastH = rec.Event.WindowBufferSizeEvent.dwSize.Y;
+            ev->code = KEY_RESIZE;
+            return 1;
+        }
+        if (rec.EventType == KEY_EVENT && rec.Event.KeyEvent.bKeyDown) {
+            KEY_EVENT_RECORD *ke = &rec.Event.KeyEvent;
+            KeyCode kc = map_vk(ke->wVirtualKeyCode, ke->dwControlKeyState);
+            ev->code = kc;
+            ev->ctrl_keys = ke->dwControlKeyState;
+            if (kc == KEY_CHAR && ke->uChar.UnicodeChar)
+                ev->ch = ke->uChar.UnicodeChar;
+            if (kc != KEY_CHAR || ev->ch)
+                return 1;
         }
     }
 }
