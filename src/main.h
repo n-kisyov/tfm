@@ -29,6 +29,10 @@ typedef struct {
     int         show_help;
     const FsProvider *fs;
     BgTask      bgtask;
+    BgOpRecord  history[BGOP_HISTORY];
+    int         history_count;
+    int         history_visible;
+    int         panel_locked[2];     /* disallow dir-change during bgop */
 } AppState;
 
 extern AppState g_app;

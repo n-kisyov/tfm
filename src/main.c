@@ -248,15 +248,16 @@ static void render(void) {
     panel_render(&g_app.panels[1], &g_app.theme, lw, panel_start_y, tw - lw, panel_h,
                  g_app.focus == FOCUS_RIGHT);
 
-    /* ---------- progress overlay (if active and visible) ---------- */
-    if (bgop_is_active(&g_app.bgtask) && g_app.bgtask.visible) {
-        DWORD elapsed = GetTickCount() - g_app.bgtask.start_ticks;
-        ui_draw_progress(&g_app.theme, tw, th,
-                         g_app.bgtask.done_items,
-                         g_app.bgtask.total_items,
-                         g_app.bgtask.title,
-                         g_app.bgtask.current_file[0] ? g_app.bgtask.current_file : L"...",
-                         elapsed);
+    /* ---------- progress/history overlay ---------- */
+    if ((bgop_is_active(&g_app.bgtask) && g_app.bgtask.visible) || g_app.history_visible) {
+        int items = g_app.history_count;
+        if (bgop_is_active(&g_app.bgtask) && g_app.bgtask.visible) items++;
+        if (items > 0) {
+            ui_draw_history(&g_app.theme, tw, th,
+                            &g_app.bgtask,
+                            g_app.history, g_app.history_count,
+                            bgop_is_active(&g_app.bgtask) && g_app.bgtask.visible);
+        }
     }
 
     /* ---------- command line (bottom row) ---------- */
@@ -280,11 +281,22 @@ static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
 
     if (bgop_is_active(&g_app.bgtask) && ev->code == KEY_ESC) {
         g_app.bgtask.visible = 0;
+        g_app.history_visible = 0;
+        g_app.needs_redraw = 1;
+        return;
+    }
+    if (ev->code == KEY_ESC && g_app.history_visible) {
+        g_app.history_visible = 0;
         g_app.needs_redraw = 1;
         return;
     }
     if (bgop_is_active(&g_app.bgtask) && ev->code == KEY_F3) {
         g_app.bgtask.visible = !g_app.bgtask.visible;
+        g_app.needs_redraw = 1;
+        return;
+    }
+    if (ev->code == KEY_F3 && !bgop_is_active(&g_app.bgtask)) {
+        g_app.history_visible = !g_app.history_visible;
         g_app.needs_redraw = 1;
         return;
     }
@@ -334,7 +346,8 @@ static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
         g_app.needs_redraw = 1;
         return;
     case KEY_CTRL_D:
-        panel_go_drives(panel, g_app.fs);
+        if (!g_app.panel_locked[panel_idx])
+            panel_go_drives(panel, g_app.fs);
         g_app.needs_redraw = 1;
         return;
     default:
@@ -368,6 +381,7 @@ static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
         g_app.needs_redraw = 1;
         break;
     case KEY_ENTER:
+        if (g_app.panel_locked[panel_idx]) break;
         if (panel->in_drive_list) {
             panel_enter_on_drive(panel, g_app.fs);
         } else if (panel->entry_count > 0) {
@@ -384,7 +398,8 @@ static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
         g_app.needs_redraw = 1;
         break;
     case KEY_BACKSPACE:
-        panel_go_parent(panel, g_app.fs);
+        if (!g_app.panel_locked[panel_idx])
+            panel_go_parent(panel, g_app.fs);
         g_app.needs_redraw = 1;
         break;
     case KEY_ESC:
@@ -415,12 +430,14 @@ static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
             for (int i = 0; i < count && i < 4096; i++)
                 bg->paths[bg->path_count++] = path_join(panel_current_path(panel), entries[i].name);
             wcscpy_s(bg->dest_dir, BGOP_PATH_MAX, panel_current_path(other));
-            bg->panel_src = panel; bg->panel_dst = other;
+            bg->panel_src_idx = panel_idx;
+            bg->panel_dst_idx = (panel_idx == 0) ? 1 : 0;
             bg->fs_provider = (void *)g_app.fs;
             bgop_unlock(bg);
             free(entries);
             panel_clear_tags(panel);
             bgop_start_copy(bg);
+            g_app.panel_locked[panel_idx] = 1;
         }
         g_app.needs_redraw = 1;
         break;
@@ -437,12 +454,14 @@ static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
             for (int i = 0; i < count && i < 4096; i++)
                 bg->paths[bg->path_count++] = path_join(panel_current_path(panel), entries[i].name);
             wcscpy_s(bg->dest_dir, BGOP_PATH_MAX, panel_current_path(other));
-            bg->panel_src = panel; bg->panel_dst = other;
+            bg->panel_src_idx = panel_idx;
+            bg->panel_dst_idx = (panel_idx == 0) ? 1 : 0;
             bg->fs_provider = (void *)g_app.fs;
             bgop_unlock(bg);
             free(entries);
             panel_clear_tags(panel);
             bgop_start_move(bg);
+            g_app.panel_locked[panel_idx] = 1;
         }
         g_app.needs_redraw = 1;
         break;
@@ -469,11 +488,13 @@ static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
                 for (int i = 0; i < count && i < 4096; i++)
                     bg->paths[bg->path_count++] = path_join(panel_current_path(panel), entries[i].name);
                 bg->dest_dir[0] = 0;
-                bg->panel_src = panel; bg->panel_dst = NULL;
+                bg->panel_src_idx = panel_idx;
+                bg->panel_dst_idx = -1;
                 bg->fs_provider = (void *)g_app.fs;
                 bgop_unlock(bg);
                 panel_clear_tags(panel);
                 bgop_start_delete(bg);
+                g_app.panel_locked[panel_idx] = 1;
             }
             free(entries);
         }
@@ -515,11 +536,17 @@ static void handle_cmdline_input(KeyEvent *ev) {
 
     if (bgop_is_active(&g_app.bgtask) && ev->code == KEY_ESC) {
         g_app.bgtask.visible = 0;
+        g_app.history_visible = 0;
         g_app.needs_redraw = 1;
         return;
     }
     if (bgop_is_active(&g_app.bgtask) && ev->code == KEY_F3) {
         g_app.bgtask.visible = !g_app.bgtask.visible;
+        g_app.needs_redraw = 1;
+        return;
+    }
+    if (ev->code == KEY_F3 && !bgop_is_active(&g_app.bgtask)) {
+        g_app.history_visible = !g_app.history_visible;
         g_app.needs_redraw = 1;
         return;
     }
@@ -616,8 +643,22 @@ int main(void) {
         /* check for background task completion */
         if (bgop_is_active(&g_app.bgtask) &&
             InterlockedCompareExchange(&g_app.bgtask.finished, 0, 0)) {
-            Panel *src = (Panel *)g_app.bgtask.panel_src;
-            Panel *dst = (Panel *)g_app.bgtask.panel_dst;
+            int si = g_app.bgtask.panel_src_idx;
+            int di = g_app.bgtask.panel_dst_idx;
+            Panel *src = &g_app.panels[si];
+            Panel *dst = (di >= 0) ? &g_app.panels[di] : NULL;
+
+            /* push to history */
+            int ok = (g_app.bgtask.done_items == g_app.bgtask.total_items) ? 1 : 0;
+            bgop_history_push(g_app.history, &g_app.history_count, BGOP_HISTORY,
+                              g_app.bgtask.op_type,
+                              g_app.bgtask.total_items,
+                              g_app.bgtask.done_items,
+                              g_app.bgtask.title, ok);
+
+            /* unlock panel */
+            g_app.panel_locked[si] = 0;
+
             panel_refresh(src, g_app.fs);
             if (dst) panel_refresh(dst, g_app.fs);
             bgop_free(&g_app.bgtask);

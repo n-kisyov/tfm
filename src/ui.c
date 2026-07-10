@@ -260,24 +260,33 @@ void ui_clear_screen(void) {
     }
 }
 
-void ui_draw_progress(const Theme *theme, int tw, int th,
-                      int done, int total, const wchar_t *title,
-                      const wchar_t *file, DWORD elapsed_ms) {
-    int bw = tw - 4;
+void ui_draw_history(const Theme *theme, int tw, int th,
+                     const void *bgtask_v,
+                     const void *hist_v, int hist_count,
+                     int show_current) {
+    /* avoid including bgop.h — we only need a few known fields */
+    typedef struct { int op_type, total_items; volatile LONG done_items, visible, active;
+                     wchar_t current_file[260], title[64]; DWORD start_ticks; } Bt;
+    typedef struct { int op_type, total, done, status; wchar_t desc[128]; } Hr;
+    const Bt *bt = (const Bt *)bgtask_v;
+    const Hr *hist = (const Hr *)hist_v;
+
+    int lines = hist_count + (show_current ? 1 : 0) + 3; /* title + header + footer */
+    int max_lines = th - 4;
+    if (lines > max_lines) lines = max_lines;
+    int bw = tw - 8;
+    if (bw < 50) bw = tw - 2;
     if (bw < 30) bw = 30;
-    int bh = 5;
+    int bh = lines + 2;
     int bx = (tw - bw) / 2;
-    int by = th - bh - 2;
-    if (by < 2) by = 2;
-    if (by + bh >= th) by = th - bh - 1;
+    int by = (th - bh) / 2;
     if (by < 0) by = 0;
 
     /* background */
     ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
     ui_set_fg(theme_get(theme, COLOR_FILE));
     ui_fill_rect(bx, by, bw, bh, L' ');
-
-    /* border */
+    ui_reset_colors();
     ui_set_fg(theme_get(theme, COLOR_FOCUS_BORDER));
     ui_draw_rect(bx, by, bw, bh);
 
@@ -285,42 +294,91 @@ void ui_draw_progress(const Theme *theme, int tw, int th,
     ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
     ui_set_fg(theme_get(theme, COLOR_SELECTED_FG));
     ui_set_bold();
-    ui_draw_text(bx + 2, by + 1, title);
+    ui_draw_text(bx + 2, by + 1, L"  Operation history");
+    if (show_current)
+        ui_draw_text(bx + bw - 20, by + 1, L" [running]");
     ui_reset_colors();
 
-    /* file name */
-    ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
-    ui_set_fg(theme_get(theme, COLOR_FILE));
-    ui_draw_text_trunc(bx + 2, by + 2, bw - 4, file ? file : L"...");
-    ui_reset_colors();
+    int row = by + 2;
+    int inner_w = bw - 4;
+    const wchar_t *opnames[] = { L"?", L"Copy", L"Move", L"Delete" };
 
-    /* progress bar background */
-    int bar_x = bx + 2;
-    int bar_y = by + 3;
-    int bar_w = bw - 4;
-    ui_set_bg(theme_get(theme, COLOR_TAB_INACTIVE));
-    ui_set_fg(theme_get(theme, COLOR_TAB_INACTIVE));
-    ui_draw_h_line(bar_x, bar_y, bar_w, L'\x2591');   /* light shade */
+    /* current operation progress bar */
+    if (show_current && bt && bt->active) {
+        ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+        ui_set_fg(theme_get(theme, COLOR_SELECTED_FG));
+        ui_set_bold();
+        wchar_t buf[320];
+        DWORD el = GetTickCount() - bt->start_ticks;
+        int pct = bt->total_items ? (int)((int64_t)bt->done_items * 100 / bt->total_items) : 0;
+        swprintf_s(buf, 320, L" %s  %d/%d  %d%%  %d:%02d  %s",
+                   opnames[bt->op_type >= 1 && bt->op_type <= 3 ? bt->op_type : 0],
+                   (int)bt->done_items, bt->total_items, pct,
+                   (el/1000)/60, (el/1000)%60,
+                   bt->current_file[0] ? bt->current_file : L"...");
+        ui_draw_text_trunc(bx + 2, row, inner_w, buf);
+        ui_reset_colors();
+        row++;
 
-    /* progress bar fill */
-    if (total > 0) {
-        int fill = (int)(((int64_t)done * (bar_w - 2)) / total);
-        if (fill < 0) fill = 0;
-        if (fill > bar_w - 2) fill = bar_w - 2;
-        ui_set_bg(theme_get(theme, COLOR_PROGRESS));
-        ui_set_fg(theme_get(theme, COLOR_PROGRESS));
-        ui_draw_h_line(bar_x + 1, bar_y, fill, L'\x2588');  /* full block */
+        /* progress bar */
+        ui_set_bg(theme_get(theme, COLOR_TAB_INACTIVE));
+        ui_set_fg(theme_get(theme, COLOR_TAB_INACTIVE));
+        ui_draw_h_line(bx + 2, row, inner_w, L'\x2591');
+        if (bt->total_items > 0) {
+            int fill = (int)(((int64_t)bt->done_items * (inner_w - 2)) / bt->total_items);
+            if (fill < 0) fill = 0;
+            if (fill > inner_w - 2) fill = inner_w - 2;
+            ui_set_bg(theme_get(theme, COLOR_PROGRESS));
+            ui_set_fg(theme_get(theme, COLOR_PROGRESS));
+            ui_draw_h_line(bx + 3, row, fill, L'\x2588');
+        }
+        ui_reset_colors();
+        row++;
     }
 
-    /* info line */
+    /* divider */
+    if (hist_count > 0) {
+        ui_set_fg(theme_get(theme, COLOR_PANEL_BORDER));
+        ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+        ui_draw_h_line(bx + 2, row, inner_w, L'\x2500');
+        ui_reset_colors();
+        row++;
+    }
+
+    /* history items */
+    int start_hist = 0;
+    if (hist_count > lines - row + by) start_hist = hist_count - (lines - row + by);
+    if (start_hist < 0) start_hist = 0;
+    for (int i = start_hist; i < hist_count && row < by + bh - 2; i++) {
+        const Hr *h = &hist[i];
+        wchar_t buf[256];
+        const wchar_t *st = h->status ? L"OK" : L"FAIL";
+        uint32_t sc = h->status ? theme_get(theme, COLOR_PROGRESS) : theme_get(theme, COLOR_ERROR);
+        swprintf_s(buf, 256, L"   %-6s %d/%d  %s", opnames[h->op_type >= 1 && h->op_type <= 3 ? h->op_type : 0],
+                   h->done, h->total, h->desc[0] ? h->desc : L"");
+        ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+        ui_set_fg(theme_get(theme, COLOR_FILE));
+        ui_set_dim();
+        ui_draw_text(bx + 2, row, buf);
+        ui_set_fg(sc);
+        ui_set_bold();
+        ui_draw_text(bx + inner_w - 6, row, st);
+        row++;
+        ui_reset_colors();
+    }
+
+    /* empty state */
+    if (hist_count == 0 && !show_current) {
+        ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+        ui_set_fg(theme_get(theme, COLOR_FILE));
+        ui_set_dim();
+        ui_draw_text(bx + 4, row, L"(no operations yet)");
+        ui_reset_colors();
+    }
+
     ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
-    ui_set_fg(theme_get(theme, COLOR_FILE));
-    ui_set_dim();
-    wchar_t info[256];
-    DWORD secs = elapsed_ms / 1000;
-    swprintf_s(info, 256, L" %d/%d   %d:%02d  [Esc to hide] ",
-               done, total, secs / 60, secs % 60);
-    ui_draw_text(bx + 2, by + bh - 2, info);
+    ui_set_fg(theme_get(theme, COLOR_DIALOG_BORDER));
+    ui_draw_text_centered(by + bh - 1, bw, L" F3 / Esc = close ");
     ui_reset_colors();
 }
 

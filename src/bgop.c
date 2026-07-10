@@ -30,6 +30,25 @@ int bgop_is_active(const BgTask *t) {
 void bgop_lock(BgTask *t)  { EnterCriticalSection(&t->cs); }
 void bgop_unlock(BgTask *t){ LeaveCriticalSection(&t->cs); }
 
+void bgop_history_push(BgOpRecord *hist, int *count, int cap,
+                       BgOpType op, int total, int done,
+                       const wchar_t *desc, int status) {
+    if (*count >= cap) {
+        memmove(hist, hist + 1, (cap - 1) * sizeof(BgOpRecord));
+        *count = cap - 1;
+    }
+    BgOpRecord *r = &hist[*count];
+    r->op_type = op;
+    r->total   = total;
+    r->done    = done;
+    r->status  = status;
+    if (desc)
+        wcsncpy_s(r->desc, 128, desc, 127);
+    else
+        r->desc[0] = 0;
+    (*count)++;
+}
+
 static int bg_copy_single_file(const wchar_t *src, const wchar_t *dest) {
     if (GetFileAttributesW(dest) != INVALID_FILE_ATTRIBUTES) {
         SetFileAttributesW(dest, FILE_ATTRIBUTE_NORMAL);

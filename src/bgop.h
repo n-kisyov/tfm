@@ -5,6 +5,7 @@
 #include <wchar.h>
 
 #define BGOP_PATH_MAX  520
+#define BGOP_HISTORY   30
 
 typedef enum {
     BGOP_NONE = 0,
@@ -12,6 +13,14 @@ typedef enum {
     BGOP_MOVE,
     BGOP_DELETE
 } BgOpType;
+
+typedef struct {
+    BgOpType op_type;
+    int      total;
+    int      done;
+    wchar_t  desc[128];
+    int      status;       /* 0=failed, 1=ok */
+} BgOpRecord;
 
 typedef struct BgTask {
     volatile LONG active;
@@ -34,8 +43,8 @@ typedef struct BgTask {
     wchar_t   dest_dir[BGOP_PATH_MAX];
 
     /* panel pointers (set by caller, must stay valid) */
-    void     *panel_src;
-    void     *panel_dst;
+    int      panel_src_idx;
+    int      panel_dst_idx;
     void     *fs_provider;
 } BgTask;
 
@@ -48,5 +57,9 @@ void  bgop_unlock(BgTask *t);
 int   bgop_start_copy  (BgTask *t);
 int   bgop_start_move  (BgTask *t);
 int   bgop_start_delete(BgTask *t);
+
+void  bgop_history_push(BgOpRecord *history, int *count, int cap,
+                        BgOpType op, int total, int done,
+                        const wchar_t *desc, int status);
 
 #endif
