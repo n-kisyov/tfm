@@ -69,17 +69,12 @@ int config_load(Config *c, const wchar_t *path) {
             JsonValue *pv = json_arr_get(panels, pi);
             if (!pv || pv->type != JSON_OBJECT) continue;
             JsonValue *tabs = json_get(pv, L"tabs");
-            if (tabs && tabs->type == JSON_ARRAY) {
-                int tc = 0;
-                for (int ti = 0; ti < tabs->arr.count && ti < MAX_TABS; ti++) {
-                    JsonValue *tv = json_arr_get(tabs, ti);
-                    if (tv && tv->type == JSON_STRING && tv->str_val[0]) {
-                        wcscpy_s(c->startup_dirs[pi][ti], CONFIG_MAX_PATH, tv->str_val);
-                        tc++;
-                    }
-                }
-                c->startup_tab_counts[pi] = tc > 0 ? tc : 1;
+            if (tabs && tabs->type == JSON_ARRAY && tabs->arr.count > 0) {
+                JsonValue *tv = json_arr_get(tabs, 0);
+                if (tv && tv->type == JSON_STRING && tv->str_val[0])
+                    wcscpy_s(c->startup_dirs[pi][0], CONFIG_MAX_PATH, tv->str_val);
             }
+            c->startup_tab_counts[pi] = 1;
             JsonValue *drives = json_get(pv, L"drives");
             if (drives && drives->type == JSON_ARRAY) {
                 for (int d = 0; d < drives->arr.count && d < 26; d++) {

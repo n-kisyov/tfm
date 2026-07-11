@@ -312,7 +312,7 @@ int panel_tab_new(Panel *p) {
 }
 
 int panel_tab_close(Panel *p) {
-    if (p->tab_count <= 1) return 0;
+    if (p->tab_count <= 1 || p->active_tab == 0) return 0;
     int idx = p->active_tab;
     /* shift tabs left */
     for (int i = idx; i < p->tab_count - 1; i++) {

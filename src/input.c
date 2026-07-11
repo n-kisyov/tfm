@@ -70,6 +70,11 @@ static KeyCode map_vk(WORD vk, DWORD ctrl) {
     case VK_F11: return KEY_F11;
     case VK_F12: return KEY_F12;
     default:
+        if (shift && alt && !ctrl_pressed) {
+            if (vk == L'N') return KEY_ALT_SHIFT_N;
+            if (vk == L'B') return KEY_ALT_SHIFT_B;
+            if (vk == L'M') return KEY_ALT_SHIFT_M;
+        }
         if (ctrl_pressed && !alt) {
             if (vk == L'T') return KEY_CTRL_T;
             if (vk == L'W') return KEY_CTRL_W;

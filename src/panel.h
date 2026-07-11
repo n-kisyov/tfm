@@ -5,7 +5,7 @@
 #include "fs.h"
 #include "theme.h"
 
-#define PANEL_MAX_TABS 8
+#define PANEL_MAX_TABS 5
 
 typedef struct {
     wchar_t path[520];

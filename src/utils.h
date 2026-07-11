@@ -8,7 +8,7 @@
 #define MAX_PATH_LEN 520
 #define MAX_CMDLINE_LEN 4096
 #define MAX_HISTORY 100
-#define MAX_TABS 8
+#define MAX_TABS 5
 #define MAX_ENTRIES_PER_DIR 4096
 #define MAX_ENTRY_STRING 256
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))

@@ -52,18 +52,6 @@ static void init_app(void) {
             dir = get_home_dir();
         panel_init(&g_app.panels[i], dir);
 
-        /* add extra startup tabs */
-        for (int ti = 1; ti < g_app.config.startup_tab_counts[i]; ti++) {
-            g_app.panels[i].tab_count++;
-            PanelTab *pt = &g_app.panels[i].tabs[ti];
-            wchar_t *tp = g_app.config.startup_dirs[i][ti];
-            if (!tp || !tp[0] || !g_app.fs->exists(tp) || !g_app.fs->is_dir(tp))
-                tp = get_home_dir();
-            wcscpy_s(pt->path, 520, tp);
-            const wchar_t *nm = wcsrchr(pt->path, L'\\');
-            wcsncpy_s(pt->display_name, 32, nm ? nm + 1 : pt->path, 31);
-        }
-
         g_app.panels[i].show_hidden = g_app.config.show_hidden;
         g_app.panels[i].sort_by = g_app.config.sort_by;
         g_app.panels[i].sort_reverse = g_app.config.sort_reverse;
@@ -94,13 +82,11 @@ static void shutdown_app(void) {
     /* save current panel state — do this BEFORE bgop_free in case bgop holds a CS */
     for (int i = 0; i < 2; i++) {
         Panel *p = &g_app.panels[i];
-        g_app.config.startup_tab_counts[i] = p->tab_count;
-        for (int ti = 0; ti < p->tab_count && ti < MAX_TABS; ti++) {
-            const wchar_t *save_path = p->tabs[ti].path;
-            if (p->in_drive_list && wcscmp(save_path, L"Drives") == 0)
-                save_path = p->saved_path;
-            wcscpy_s(g_app.config.startup_dirs[i][ti], CONFIG_MAX_PATH, save_path);
-        }
+        g_app.config.startup_tab_counts[i] = 1;
+        const wchar_t *save_path = p->tabs[0].path;
+        if (p->in_drive_list && wcscmp(save_path, L"Drives") == 0)
+            save_path = p->saved_path;
+        wcscpy_s(g_app.config.startup_dirs[i][0], CONFIG_MAX_PATH, save_path);
         for (int d = 0; d < 26; d++)
             wcscpy_s(g_app.config.drive_paths[i][d], CONFIG_MAX_PATH, p->drive_paths[d]);
     }
@@ -141,11 +127,11 @@ static void render(void) {
             L"       Ctrl+D    Drive selector          F3   View / Re-show progress",
             L"       Esc       Clear tags              F2   Refresh panel",
             L"",
-            L"       Tabs                                Shell line",
-            L"       ----                                ----------",
-            L"       Ctrl+T    New tab                  Arrows  Command history",
-            L"       Ctrl+W    Close tab                Enter   Execute command",
-            L"       Ctrl+Tab  Next tab                 Esc     Clear command line",
+            L"       Tabs (1 main + up to 4 extra)     Shell line",
+            L"       ----------------------------        ----------",
+            L"       Alt+Sh+N New tab (starts Home)    Arrows  Command history",
+            L"       Alt+Sh+B Cycle tabs               Enter   Execute command",
+            L"       Alt+Sh+M Close tab (main=locked)  Esc     Clear command line",
             L"       Tab       Rotate focus             Backsp  Delete previous char",
             L"",
             L"                     F1 Help    F12 Exit",
@@ -317,23 +303,18 @@ static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
         g_app.show_help = !g_app.show_help;
         g_app.needs_redraw = 1;
         return;
-    case KEY_CTRL_T:
+    case KEY_ALT_SHIFT_N:
         panel_tab_new(panel);
         panel_refresh(panel, g_app.fs);
         g_app.needs_redraw = 1;
         return;
-    case KEY_CTRL_W:
+    case KEY_ALT_SHIFT_M:
         panel_tab_close(panel);
         panel_refresh(panel, g_app.fs);
         g_app.needs_redraw = 1;
         return;
-    case KEY_CTRL_TAB:
+    case KEY_ALT_SHIFT_B:
         panel_tab_next(panel);
-        panel_refresh(panel, g_app.fs);
-        g_app.needs_redraw = 1;
-        return;
-    case KEY_CTRL_SHIFT_TAB:
-        panel_tab_prev(panel);
         panel_refresh(panel, g_app.fs);
         g_app.needs_redraw = 1;
         return;
