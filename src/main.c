@@ -637,8 +637,7 @@ int main(void) {
         }
 
         /* check for background task completion */
-        if (bgop_is_active(&g_app.bgtask) &&
-            InterlockedCompareExchange(&g_app.bgtask.finished, 0, 0)) {
+        if (InterlockedCompareExchange(&g_app.bgtask.finished, 0, 0)) {
             int si = g_app.bgtask.panel_src_idx;
             int di = g_app.bgtask.panel_dst_idx;
             Panel *src = &g_app.panels[si];
