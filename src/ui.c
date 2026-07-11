@@ -1,9 +1,14 @@
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
 #include "ui.h"
 #include "input.h"
 #include "ssh_config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <libssh2.h>
+#include <libssh2_sftp.h>
 
 static HANDLE g_hStdout = NULL;
 static DWORD  g_oldOutMode = 0;
@@ -615,20 +620,20 @@ int ui_input_dialog(const Theme *theme, const wchar_t *title, wchar_t *buf, int 
 /* ------------------------------------------------------------------ */
 
 static int ssh_edit_form(const Theme *theme, SshConnection *c, int is_new) {
-    wchar_t name[64], host[256], port_s[16], user[64], key_file[SSH_CFG_PATH_MAX], rem[SSH_CFG_PATH_MAX];
+    wchar_t name[64], host[256], port_s[16], user[64], password[128], rem[SSH_CFG_PATH_MAX];
     wchar_t port_s_buf[16];
 
     wcscpy_s(name, 64, c->name);
     wcscpy_s(host, 256, c->host);
-    _itow_s(c->port, port_s_buf, 16, 10);
+    swprintf_s(port_s_buf, 16, L"%d", c->port);
     wcscpy_s(port_s, 16, port_s_buf);
     wcscpy_s(user, 64, c->user);
-    wcscpy_s(key_file, SSH_CFG_PATH_MAX, c->key_file);
+    wcscpy_s(password, 128, c->password);
     wcscpy_s(rem, SSH_CFG_PATH_MAX, c->remote_path);
 
-    wchar_t *fields[] = { name, host, port_s, user, key_file, rem };
-    int    field_lens[] = { 63, 255, 15, 63, SSH_CFG_PATH_MAX - 1, SSH_CFG_PATH_MAX - 1 };
-    const wchar_t *labels[] = { L"Name:", L"Host:", L"Port:", L"User:", L"Key file:", L"Rem. path:" };
+    wchar_t *fields[] = { name, host, port_s, user, password, rem };
+    int    field_lens[] = { 63, 255, 15, 63, 127, SSH_CFG_PATH_MAX - 1 };
+    const wchar_t *labels[] = { L"Name:", L"Host:", L"Port:", L"User:", L"Password:", L"Rem. path:" };
     int nf = 6;
     int cur_field = 0;
     int cur_pos[6] = {0};
@@ -719,9 +724,8 @@ static int ssh_edit_form(const Theme *theme, SshConnection *c, int is_new) {
                 c->port = _wtoi(port_s);
                 if (c->port <= 0) c->port = 22;
                 wcscpy_s(c->user, 64, user);
-                wcscpy_s(c->key_file, SSH_CFG_PATH_MAX, key_file);
+                wcscpy_s(c->password, 128, password);
                 wcscpy_s(c->remote_path, SSH_CFG_PATH_MAX, rem);
-                wcscpy_s(c->auth_method, 16, L"key");
                 return 1;
             }
             if (ev.code == KEY_UP && cur_field > 0) { cur_field--; break; }
@@ -843,7 +847,7 @@ void ui_ssh_config_dialog(const Theme *theme, void *ssh_config_v) {
             ui_reset_colors();
             ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
         }
-        { const wchar_t *f = L" Enter=Edit  Delete=Remove  Esc=Close ";
+        { const wchar_t *f = L" Enter=Edit  F5=Test  Delete=Remove  Esc=Close ";
             ui_set_fg(theme_get(theme, COLOR_DIALOG_BORDER));
             ui_draw_text(bx + (bw - (int)wcslen(f)) / 2, by + bh - 2, f); }
         ui_reset_colors();
@@ -852,6 +856,71 @@ void ui_ssh_config_dialog(const Theme *theme, void *ssh_config_v) {
         KeyEvent ev;
         while (input_poll(&ev)) {
             if (ev.code == KEY_ESC) return;
+            if (ev.code == KEY_F5 && sel < cfg->count) {
+                /* test connection with libssh2 */
+                ui_end_frame();
+                const SshConnection *tc = &cfg->conns[sel];
+                wchar_t msg[512];
+
+                /* must call libssh2_init before any WinSock calls */
+                libssh2_init(0);
+                WSADATA wsa;
+                WSAStartup(MAKEWORD(2, 2), &wsa);
+
+                struct sockaddr_storage addr;
+                memset(&addr, 0, sizeof(addr));
+                wchar_t port_s[16];
+                swprintf_s(port_s, 16, L"%d", tc->port);
+
+                ADDRINFOW hints, *result;
+                memset(&hints, 0, sizeof(hints));
+                hints.ai_family = AF_UNSPEC;
+                hints.ai_socktype = SOCK_STREAM;
+                int gai_err = 0;
+                if ((gai_err = GetAddrInfoW(tc->host, port_s, &hints, &result)) == 0) {
+                    int alen = (int)result->ai_addrlen;
+                    memcpy(&addr, result->ai_addr, alen);
+                    FreeAddrInfoW(result);
+
+                    SOCKET sock = socket(addr.ss_family, SOCK_STREAM, 0);
+                    if (sock != INVALID_SOCKET && connect(sock, (struct sockaddr *)&addr, alen) == 0) {
+                        LIBSSH2_SESSION *session = libssh2_session_init();
+                        if (session) {
+                            libssh2_session_set_timeout(session, 10000);
+
+                            if (libssh2_session_handshake(session, sock) == 0) {
+                                char user[128], pass[128];
+                                WideCharToMultiByte(CP_UTF8, 0, tc->user, -1, user, 128, NULL, NULL);
+                                WideCharToMultiByte(CP_UTF8, 0, tc->password, -1, pass, 128, NULL, NULL);
+                                int rc = libssh2_userauth_password(session, user, pass);
+                                SecureZeroMemory(pass, sizeof(pass));
+                                if (rc == 0)
+                                    swprintf_s(msg, 512, L"Connection to %s succeeded!", tc->name);
+                                else
+                                    swprintf_s(msg, 512, L"Authentication failed.\nCheck user/password.");
+                            } else {
+                                char *errmsg = NULL;
+                                int errlen = 0;
+                                libssh2_session_last_error(session, &errmsg, &errlen, 0);
+                                swprintf_s(msg, 512, L"SSH handshake failed:\n%S", errmsg ? errmsg : "unknown error");
+                            }
+                            libssh2_session_disconnect(session, "bye");
+                            libssh2_session_free(session);
+                        } else {
+                            swprintf_s(msg, 512, L"Failed to create SSH session.");
+                        }
+                    } else {
+                        swprintf_s(msg, 512, L"TCP connection failed.\nCheck host/port.");
+                    }
+                    if (sock != INVALID_SOCKET) closesocket(sock);
+                } else {
+                    wchar_t gai_msg[256];
+                    swprintf_s(gai_msg, 256, L"Hostname resolution failed (error %d).\nHost: %s  Port: %s", gai_err, tc->host, port_s);
+                    swprintf_s(msg, 512, L"%s", gai_msg);
+                }
+                MessageBoxW(NULL, msg, L"Test Connection", MB_OK);
+                break;
+            }
             if (ev.code == KEY_UP && sel > 0) { sel--; break; }
             if (ev.code == KEY_DOWN && sel < cfg->count) { sel++; break; }
             if (ev.code == KEY_ENTER) {
@@ -862,7 +931,6 @@ void ui_ssh_config_dialog(const Theme *theme, void *ssh_config_v) {
                     SshConnection tmp;
                     memset(&tmp, 0, sizeof(tmp));
                     tmp.port = 22;
-                    wcscpy_s(tmp.auth_method, 16, L"key");
                     if (ssh_edit_form(theme, &tmp, 1)) {
                         cfg->conns[cfg->count] = tmp;
                         cfg->count++;

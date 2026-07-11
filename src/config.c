@@ -131,7 +131,7 @@ int config_save(const Config *c, const wchar_t *path) {
 
     pos = buf_puts(buf, cap, pos, L"  \"sort_by\": ");
     wchar_t num[32];
-    _itow_s(c->sort_by, num, 32, 10);
+    swprintf_s(num, 32, L"%d", c->sort_by);
     pos = buf_puts(buf, cap, pos, num);
     pos = buf_puts(buf, cap, pos, L",\r\n");
 
@@ -140,7 +140,7 @@ int config_save(const Config *c, const wchar_t *path) {
     pos = buf_puts(buf, cap, pos, L",\r\n");
 
     pos = buf_puts(buf, cap, pos, L"  \"panel_split_pct\": ");
-    _itow_s(c->panel_split_pct, num, 32, 10);
+    swprintf_s(num, 32, L"%d", c->panel_split_pct);
     pos = buf_puts(buf, cap, pos, num);
     pos = buf_puts(buf, cap, pos, L",\r\n");
 

@@ -98,6 +98,7 @@ static void shutdown_app(void) {
     }
     config_save(&g_app.config, config_get_path());
 
+    ssh_cleanup();
     bgop_free(&g_app.bgtask);
     for (int i = 0; i < 2; i++) panel_free(&g_app.panels[i]);
     cmdline_free(&g_app.cmdline);

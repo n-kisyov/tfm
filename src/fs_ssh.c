@@ -1,346 +1,263 @@
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
 #include "fs.h"
 #include "utils.h"
 #include "ssh_config.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <libssh2.h>
+#include <libssh2_sftp.h>
 
 /* ------------------------------------------------------------------ */
-/* SSH master connection session pool                                  */
+/* connection pool                                                      */
 /* ------------------------------------------------------------------ */
-#define SSH_MAX_SESSIONS  4
-#define SSH_IDLE_TIMEOUT  300000   /* 5 min in ms */
-#define SSH_SOCKET_PREFIX L"tfm-ssh-"
+#define SSH_POOL_MAX 4
 
 typedef struct {
-    wchar_t  conn_name[64];
-    wchar_t  host[256];
-    int      port;
-    wchar_t  user[64];
-    wchar_t  key_file[SSH_CFG_PATH_MAX];
-    wchar_t  password[128];
-    int      use_key;
-    int      connected;
-    DWORD    last_used;
-    wchar_t  socket_path[MAX_PATH];
-    HANDLE   master_proc;
-} SshSession;
+    wchar_t            name[64];
+    LIBSSH2_SESSION   *session;
+    LIBSSH2_SFTP      *sftp;
+    SOCKET             sock;
+    DWORD              last_used;
+    int                active;
+} SshSess;
 
-static SshSession g_sessions[SSH_MAX_SESSIONS];
-static int       g_session_count = 0;
-static CRITICAL_SECTION g_ssh_cs;
-static int g_ssh_cs_init = 0;
+static SshSess g_pool[SSH_POOL_MAX];
 
-static void ssh_lock(void) {
-    if (!g_ssh_cs_init) { InitializeCriticalSection(&g_ssh_cs); g_ssh_cs_init = 1; }
-    EnterCriticalSection(&g_ssh_cs);
-}
-static void ssh_unlock(void) { LeaveCriticalSection(&g_ssh_cs); }
+static SshSess g_pool[SSH_POOL_MAX];
+static int    g_inited = 0;
 
-static const wchar_t *ssh_exe_path(void) {
-    static wchar_t path[MAX_PATH];
-    if (!path[0]) {
-        wchar_t windir[MAX_PATH];
-        GetEnvironmentVariableW(L"SystemRoot", windir, MAX_PATH);
-        swprintf_s(path, MAX_PATH, L"%s\\System32\\OpenSSH\\ssh.exe", windir);
+static void ssh_init(void) {
+    if (!g_inited) {
+        libssh2_init(0);
+        WSADATA wsa;
+        WSAStartup(MAKEWORD(2, 2), &wsa);
+        g_inited = 1;
     }
-    return path;
 }
 
-static const wchar_t *sftp_exe_path(void) {
-    static wchar_t path[MAX_PATH];
-    if (!path[0]) {
-        wchar_t windir[MAX_PATH];
-        GetEnvironmentVariableW(L"SystemRoot", windir, MAX_PATH);
-        swprintf_s(path, MAX_PATH, L"%s\\System32\\OpenSSH\\sftp.exe", windir);
-    }
-    return path;
-}
-
-static SshSession *ssh_find_session(const wchar_t *conn_name) {
-    for (int i = 0; i < g_session_count; i++) {
-        if (wcscmp(g_sessions[i].conn_name, conn_name) == 0)
-            return &g_sessions[i];
-    }
+static SshSess *ssh_pool_find(const wchar_t *name) {
+    for (int i = 0; i < SSH_POOL_MAX; i++)
+        if (g_pool[i].active && wcscmp(g_pool[i].name, name) == 0)
+            return &g_pool[i];
     return NULL;
 }
 
-static SshSession *ssh_ensure_connected(const wchar_t *conn_name) {
-    ssh_lock();
-
-    /* check if session exists and is connected */
-    SshSession *s = ssh_find_session(conn_name);
-    if (s && s->connected) {
-        s->last_used = GetTickCount();
-        ssh_unlock();
-        return s;
+static void ssh_pool_close(SshSess *s) {
+    if (s->sftp)  { libssh2_sftp_shutdown(s->sftp); s->sftp = NULL; }
+    if (s->session) {
+        libssh2_session_disconnect(s->session, "bye");
+        libssh2_session_free(s->session);
+        s->session = NULL;
     }
-
-    /* look up config */
-    const wchar_t *cfg_path = ssh_config_path();
-    SshConfig cfg;
-    ssh_config_init(&cfg);
-    ssh_config_load(&cfg, cfg_path);
-
-    const SshConnection *conn = NULL;
-    for (int i = 0; i < cfg.count; i++) {
-        if (wcscmp(cfg.conns[i].name, conn_name) == 0) {
-            conn = &cfg.conns[i];
-            break;
-        }
-    }
-    if (!conn) { ssh_unlock(); return NULL; }
-
-    /* create or reuse session slot */
-    if (!s) {
-        if (g_session_count >= SSH_MAX_SESSIONS) {
-            /* evict oldest */
-            int oldest = 0;
-            for (int i = 1; i < g_session_count; i++)
-                if (g_sessions[i].last_used < g_sessions[oldest].last_used)
-                    oldest = i;
-            s = &g_sessions[oldest];
-            if (s->master_proc) {
-                TerminateProcess(s->master_proc, 0);
-                CloseHandle(s->master_proc);
-                s->master_proc = NULL;
-            }
-            DeleteFileW(s->socket_path);
-            memset(s, 0, sizeof(SshSession));
-        } else {
-            s = &g_sessions[g_session_count++];
-            memset(s, 0, sizeof(SshSession));
-        }
-    }
-
-    wcscpy_s(s->conn_name, 64, conn->name);
-    wcscpy_s(s->host, 256, conn->host);
-    s->port = conn->port;
-    wcscpy_s(s->user, 64, conn->user);
-    wcscpy_s(s->key_file, SSH_CFG_PATH_MAX, conn->key_file);
-    wcscpy_s(s->password, 128, conn->password);
-    s->use_key = (wcscmp(conn->auth_method, L"key") == 0);
-
-    /* socket path in %TEMP% */
-    wchar_t tmp[MAX_PATH];
-    GetTempPathW(MAX_PATH, tmp);
-    swprintf_s(s->socket_path, MAX_PATH, L"%s\\%s%s", tmp, SSH_SOCKET_PREFIX, conn->name);
-
-    DeleteFileW(s->socket_path);
-
-    /* build ssh command: ssh -M -S <socket> -f -N -o StrictHostKeyChecking=accept-new ... */
-    wchar_t ssh_cmd[2048];
-    swprintf_s(ssh_cmd, 2048,
-               L"\"%s\" -M -S \"%s\" -f -N "
-               L"-o StrictHostKeyChecking=accept-new "
-               L"-o ServerAliveInterval=60 "
-               L"-p %d %s@%s",
-               ssh_exe_path(), s->socket_path,
-               s->port, s->user, s->host);
-
-    if (s->use_key && s->key_file[0])
-        swprintf_s(ssh_cmd + wcslen(ssh_cmd), 2048 - wcslen(ssh_cmd),
-                   L" -i \"%s\"", s->key_file);
-
-    /* launch ssh master */
-    STARTUPINFOW si;
-    memset(&si, 0, sizeof(si));
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi = {0};
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-
-    if (!CreateProcessW(NULL, ssh_cmd, NULL, NULL, FALSE,
-                        CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        ssh_unlock();
-        return NULL;
-    }
-    CloseHandle(pi.hThread);
-    s->master_proc = pi.hProcess;
-
-    /* wait briefly for the connection to establish */
-    WaitForSingleObject(pi.hProcess, 5000);
-    DWORD exit_code = 0;
-    GetExitCodeProcess(pi.hProcess, &exit_code);
-
-    /* if ssh exited quickly with non-zero, connection failed */
-    if (exit_code != STILL_ACTIVE && exit_code != 0) {
-        CloseHandle(pi.hProcess);
-        s->master_proc = NULL;
-        s->connected = 0;
-        ssh_unlock();
-        return NULL;
-    }
-
-    s->connected = 1;
-    s->last_used = GetTickCount();
-    ssh_unlock();
-    return s;
+    if (s->sock != INVALID_SOCKET) { closesocket(s->sock); s->sock = INVALID_SOCKET; }
+    s->active = 0;
+    s->name[0] = 0;
 }
 
-/* run sftp in batch mode, capture output */
-static int sftp_run(SshSession *s, const wchar_t *commands, wchar_t **output, int *out_len) {
-    if (!s || !s->connected) return -1;
+static SshSess *ssh_pool_alloc(void) {
+    for (int i = 0; i < SSH_POOL_MAX; i++)
+        if (!g_pool[i].active) { memset(&g_pool[i], 0, sizeof(SshSess)); return &g_pool[i]; }
+    int oldest = 0;
+    for (int i = 1; i < SSH_POOL_MAX; i++)
+        if (g_pool[i].last_used < g_pool[oldest].last_used) oldest = i;
+    ssh_pool_close(&g_pool[oldest]);
+    memset(&g_pool[oldest], 0, sizeof(SshSess));
+    return &g_pool[oldest];
+}
 
-    wchar_t cmd[4096];
-    swprintf_s(cmd, 4096,
-               L"\"%s\" -o ControlPath=\"%s\" -o StrictHostKeyChecking=accept-new -b - %s@%s",
-               sftp_exe_path(), s->socket_path, s->user, s->host);
-
-    HANDLE h_stdin_r, h_stdin_w, h_stdout_r, h_stdout_w;
-    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
-
-    CreatePipe(&h_stdin_r, &h_stdin_w, &sa, 0);
-    CreatePipe(&h_stdout_r, &h_stdout_w, &sa, 0);
-    SetHandleInformation(h_stdin_w, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-    SetHandleInformation(h_stdout_r, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-
-    STARTUPINFOW si;
-    memset(&si, 0, sizeof(si));
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi = {0};
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    si.hStdInput = h_stdin_r;
-    si.hStdOutput = h_stdout_w;
-    si.hStdError = h_stdout_w;
-
-    if (!CreateProcessW(NULL, cmd, NULL, NULL, TRUE,
-                        CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        CloseHandle(h_stdin_r); CloseHandle(h_stdin_w);
-        CloseHandle(h_stdout_r); CloseHandle(h_stdout_w);
-        return -1;
+static int lookup_conn(const wchar_t *conn_name, SshConnection *out) {
+    SshConfig cfg;
+    ssh_config_init(&cfg);
+    const wchar_t *cfg_path = ssh_config_path();
+    if (!ssh_config_load(&cfg, cfg_path)) return -1;
+    for (int i = 0; i < cfg.count; i++) {
+        if (wcscmp(cfg.conns[i].name, conn_name) == 0) {
+            *out = cfg.conns[i];
+            return 0;
+        }
     }
-    CloseHandle(h_stdin_r);
-    CloseHandle(h_stdout_w);
+    return -1;
+}
 
-    /* feed commands */
-    char *mb_cmds = NULL;
-    int mb_len = 0;
-    if (commands) {
-        mb_len = WideCharToMultiByte(CP_UTF8, 0, commands, -1, NULL, 0, NULL, NULL);
-        mb_cmds = (char *)malloc(mb_len + 2);
-        WideCharToMultiByte(CP_UTF8, 0, commands, -1, mb_cmds, mb_len, NULL, NULL);
-        mb_cmds[mb_len] = '\n';
-        DWORD w;
-        WriteFile(h_stdin_w, mb_cmds, mb_len, &w, NULL);
-        WriteFile(h_stdin_w, "\n", 1, &w, NULL);
-        free(mb_cmds);
-    }
-    CloseHandle(h_stdin_w);
+static int ssh_resolve(const SshConnection *conn, struct sockaddr_storage *addr, int *addr_len) {
+    memset(addr, 0, sizeof(*addr));
+    *addr_len = 0;
+    wchar_t port_s[16];
+    swprintf_s(port_s, 16, L"%d", conn->port);
 
-    /* read output */
-    char obuf[8192];
-    DWORD total = 0;
-    DWORD rd;
-    while (ReadFile(h_stdout_r, obuf + total, sizeof(obuf) - total - 1, &rd, NULL) && rd > 0) {
-        total += rd;
-        if (total >= sizeof(obuf) - 1) break;
-    }
-    obuf[total] = 0;
-    CloseHandle(h_stdout_r);
-
-    WaitForSingleObject(pi.hProcess, 15000);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-
-    if (output && out_len) {
-        int wlen = MultiByteToWideChar(CP_UTF8, 0, obuf, -1, NULL, 0);
-        *output = (wchar_t *)calloc(wlen + 1, sizeof(wchar_t));
-        MultiByteToWideChar(CP_UTF8, 0, obuf, -1, *output, wlen);
-        *out_len = wlen > 0 ? wlen - 1 : 0;
-    }
-
+    ADDRINFOW hints, *result;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (GetAddrInfoW(conn->host, port_s, &hints, &result) != 0) return -1;
+    *addr_len = (int)result->ai_addrlen;
+    memcpy(addr, result->ai_addr, result->ai_addrlen);
+    FreeAddrInfoW(result);
     return 0;
 }
 
-/* parse sftp ls -l output: "drwxr-xr-x    2 user group    4096 Jul 11 10:30 dirname" */
-static int parse_ls_line(const wchar_t *line, FileEntry *e) {
-    if (!line || !line[0]) return 0;
-    wchar_t perms[16], date[32], time[16], name[256];
-    int fields = swscanf_s(line, L"%15s %*d %*s %*s %*d %31s %15s %255[^\r\n]",
-                           perms, 16, date, 32, time, 16, name, 256);
-    if (fields < 4) return 0;
+static SshSess *ssh_connect(const wchar_t *conn_name) {
+    ssh_init();
 
-    wcscpy_s(e->name, 256, name);
-    e->type = (perms[0] == L'd') ? ENTRY_DIR :
-              (perms[0] == L'l') ? ENTRY_SYMLINK : ENTRY_FILE;
-    e->size = 0;
-    e->attrs = (e->type == ENTRY_DIR) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
-    memset(&e->modified, 0, sizeof(e->modified));
-    return 1;
+    SshSess *s = ssh_pool_find(conn_name);
+    if (s && s->session && s->sftp) {
+        s->last_used = GetTickCount();
+        return s;
+    }
+
+    SshConnection cfg;
+    if (lookup_conn(conn_name, &cfg) < 0) {
+        MessageBoxW(NULL, conn_name, L"SSH: config lookup failed", MB_ICONERROR);
+        return NULL;
+    }
+
+    struct sockaddr_storage addr;
+    int addr_len = 0;
+    if (ssh_resolve(&cfg, &addr, &addr_len) < 0) {
+        MessageBoxW(NULL, cfg.host, L"SSH: DNS resolution failed", MB_ICONERROR);
+        return NULL;
+    }
+
+    SOCKET sock = socket(addr.ss_family, SOCK_STREAM, 0);
+    if (sock == INVALID_SOCKET) {
+        MessageBoxW(NULL, L"socket() failed", L"SSH Error", MB_ICONERROR);
+        return NULL;
+    }
+
+    if (connect(sock, (struct sockaddr *)&addr, addr_len) != 0) {
+        wchar_t msg[256];
+        swprintf_s(msg, 256, L"TCP connect failed.\nHost: %s", cfg.host);
+        MessageBoxW(NULL, msg, L"SSH Error", MB_ICONERROR);
+        closesocket(sock);
+        return NULL;
+    }
+
+    LIBSSH2_SESSION *session = libssh2_session_init();
+    if (!session) { closesocket(sock); return NULL; }
+    libssh2_session_set_timeout(session, 15000);
+
+    if (libssh2_session_handshake(session, sock) != 0) {
+        char *errmsg = NULL;
+        int errlen = 0;
+        int rc = libssh2_session_last_error(session, &errmsg, &errlen, 0);
+        wchar_t msg[1024];
+        swprintf_s(msg, 1024, L"SSH handshake failed (rc=%d):\n%S\n\n"
+                   L"The server likely requires Ed25519 host keys.\n"
+                   L"Fix: on the server run:\n"
+                   L"ssh-keygen -t rsa -f /etc/ssh/ssh_host_rsa_key\n"
+                   L"systemctl restart sshd",
+                   rc, errmsg ? errmsg : "unknown");
+        MessageBoxW(NULL, msg, L"SSH Error", MB_ICONERROR);
+        libssh2_session_free(session);
+        closesocket(sock);
+        return NULL;
+    }
+
+    /* check the fingerprint */
+    const char *fingerprint = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
+    (void)fingerprint; /* accept all host keys for now */
+
+    char user[128], pass[128];
+    WideCharToMultiByte(CP_UTF8, 0, cfg.user, -1, user, 128, NULL, NULL);
+    WideCharToMultiByte(CP_UTF8, 0, cfg.password, -1, pass, 128, NULL, NULL);
+
+    int rc = libssh2_userauth_password(session, user, pass);
+    SecureZeroMemory(pass, sizeof(pass));
+    if (rc != 0) {
+        libssh2_session_disconnect(session, "auth fail");
+        libssh2_session_free(session);
+        closesocket(sock);
+        return NULL;
+    }
+
+    LIBSSH2_SFTP *sf = libssh2_sftp_init(session);
+    if (!sf) {
+        libssh2_session_disconnect(session, "sftp fail");
+        libssh2_session_free(session);
+        closesocket(sock);
+        return NULL;
+    }
+
+    s = ssh_pool_alloc();
+    wcscpy_s(s->name, 64, conn_name);
+    s->session = session;
+    s->sftp    = sf;
+    s->sock    = sock;
+    s->active  = 1;
+    s->last_used = GetTickCount();
+    return s;
 }
 
 /* ------------------------------------------------------------------ */
-/* FsProvider implementation                                           */
+/* path helpers                                                         */
+/* ------------------------------------------------------------------ */
+static wchar_t *ssh_conn_name(const wchar_t *path, wchar_t *buf, int sz) {
+    const wchar_t *rest = path + 6;
+    const wchar_t *slash = wcschr(rest, L'\\');
+    int len = slash ? (int)(slash - rest) : (int)wcslen(rest);
+    wcsncpy_s(buf, sz, rest, len);
+    buf[len] = 0;
+    return buf;
+}
+
+static wchar_t *ssh_remote_path(const wchar_t *path, wchar_t *buf, int sz) {
+    const wchar_t *rest = path + 6;
+    const wchar_t *slash = wcschr(rest, L'\\');
+    const wchar_t *rpath = slash ? slash + 1 : L"";
+    wcscpy_s(buf, sz, rpath[0] ? rpath : L".");
+    for (wchar_t *p = buf; *p; p++) if (*p == L'\\') *p = L'/';
+    if (buf[0] == 0) wcscpy_s(buf, sz, L".");
+    return buf;
+}
+
+/* ------------------------------------------------------------------ */
+/* FsProvider implementation                                            */
 /* ------------------------------------------------------------------ */
 
 static int ssh_fs_list_dir(const wchar_t *path, FileEntry **entries, int *count) {
     *entries = NULL;
     *count = 0;
-
-    /* path format: \\ssh\ConnName\remote\path */
-    /* skip \\ssh\ */
-    const wchar_t *rest = path + 6;
     if (wcsncmp(path, L"\\\\ssh\\", 6) != 0) return -1;
 
-    /* extract conn name (up to next backslash or end) */
-    wchar_t conn_name[64];
-    const wchar_t *slash = wcschr(rest, L'\\');
-    int name_len = slash ? (int)(slash - rest) : (int)wcslen(rest);
-    wcsncpy_s(conn_name, 64, rest, name_len);
-    conn_name[name_len] = 0;
+    wchar_t conn[64], rpath[SSH_CFG_PATH_MAX];
+    ssh_conn_name(path, conn, 64);
+    ssh_remote_path(path, rpath, SSH_CFG_PATH_MAX);
 
-    /* remote path: after the first backslash */
-    const wchar_t *remote = slash ? slash + 1 : L".";
-    /* convert backslashes to forward slashes */
-    wchar_t unix_path[SSH_CFG_PATH_MAX];
-    wcscpy_s(unix_path, SSH_CFG_PATH_MAX, remote);
-    for (wchar_t *p = unix_path; *p; p++) if (*p == L'\\') *p = L'/';
-
-    SshSession *s = ssh_ensure_connected(conn_name);
+    SshSess *s = ssh_connect(conn);
     if (!s) return -1;
 
-    /* build sftp commands */
-    wchar_t cmds[4096];
-    if (unix_path[0])
-        swprintf_s(cmds, 4096, L"cd \"%s\"\nls -l", unix_path);
-    else
-        wcscpy_s(cmds, 4096, L"ls -l");
+    char upath[SSH_CFG_PATH_MAX];
+    WideCharToMultiByte(CP_UTF8, 0, rpath, -1, upath, SSH_CFG_PATH_MAX, NULL, NULL);
 
-    wchar_t *output = NULL;
-    int out_len = 0;
-    if (sftp_run(s, cmds, &output, &out_len) < 0) return -1;
-    if (!output) return -1;
+    LIBSSH2_SFTP_HANDLE *dh = libssh2_sftp_opendir(s->sftp, upath);
+    if (!dh) return -1;
 
-    /* count lines for pre-alloc */
-    int line_count = 0;
-    for (int i = 0; i < out_len; i++)
-        if (output[i] == L'\n') line_count++;
-
-    int cap = line_count + 4;
-    if (cap < 64) cap = 64;
+    int cap = 64;
     FileEntry *list = (FileEntry *)calloc(cap, sizeof(FileEntry));
     int cnt = 0;
+    char name_buf[512];
+    LIBSSH2_SFTP_ATTRIBUTES attrs;
 
-    const wchar_t *line_start = output;
-    for (int i = 0; i <= out_len; i++) {
-        if (output[i] == L'\n' || output[i] == 0) {
-            int llen = (int)(&output[i] - line_start);
-            if (llen > 0) {
-                wchar_t line[512];
-                wcsncpy_s(line, 512, line_start, llen > 511 ? 511 : llen);
-                line[llen > 511 ? 511 : llen] = 0;
-                if (cnt >= cap) {
-                    cap *= 2;
-                    list = (FileEntry *)realloc(list, cap * sizeof(FileEntry));
-                }
-                if (parse_ls_line(line, &list[cnt])) cnt++;
-            }
-            line_start = &output[i + 1];
+    while (libssh2_sftp_readdir(dh, name_buf, sizeof(name_buf), &attrs) > 0) {
+        if (name_buf[0] == '.' && (name_buf[1] == 0 || (name_buf[1] == '.' && name_buf[2] == 0)))
+            continue;
+        if (cnt >= cap) {
+            cap *= 2;
+            list = (FileEntry *)realloc(list, cap * sizeof(FileEntry));
         }
+        MultiByteToWideChar(CP_UTF8, 0, name_buf, -1, list[cnt].name, 256);
+        list[cnt].type = LIBSSH2_SFTP_S_ISDIR(attrs.permissions) ? ENTRY_DIR :
+                         LIBSSH2_SFTP_S_ISLNK(attrs.permissions) ? ENTRY_SYMLINK : ENTRY_FILE;
+        list[cnt].size = attrs.filesize;
+        list[cnt].attrs = list[cnt].type == ENTRY_DIR ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+        list[cnt].modified.dwLowDateTime  = (DWORD)(attrs.mtime & 0xFFFFFFFF);
+        list[cnt].modified.dwHighDateTime = 0;
+        cnt++;
     }
+    libssh2_sftp_closedir(dh);
 
-    free(output);
     *entries = list;
     *count = cnt;
     return 0;
@@ -348,82 +265,181 @@ static int ssh_fs_list_dir(const wchar_t *path, FileEntry **entries, int *count)
 
 static int ssh_fs_stat(const wchar_t *path, FileEntry *out) {
     memset(out, 0, sizeof(FileEntry));
-
-    const wchar_t *rest = path + 6;
     if (wcsncmp(path, L"\\\\ssh\\", 6) != 0) return -1;
 
-    wchar_t conn_name[64];
-    const wchar_t *slash = wcschr(rest, L'\\');
-    int name_len = slash ? (int)(slash - rest) : (int)wcslen(rest);
-    wcsncpy_s(conn_name, 64, rest, name_len);
-    conn_name[name_len] = 0;
+    wchar_t conn[64], rpath[SSH_CFG_PATH_MAX];
+    ssh_conn_name(path, conn, 64);
+    ssh_remote_path(path, rpath, SSH_CFG_PATH_MAX);
 
-    SshSession *s = ssh_ensure_connected(conn_name);
+    SshSess *s = ssh_connect(conn);
     if (!s) return -1;
 
-    const wchar_t *remote = slash ? slash + 1 : L".";
-    wchar_t unix_path[SSH_CFG_PATH_MAX];
-    wcscpy_s(unix_path, SSH_CFG_PATH_MAX, remote);
-    for (wchar_t *p = unix_path; *p; p++) if (*p == L'\\') *p = L'/';
+    char upath[SSH_CFG_PATH_MAX];
+    WideCharToMultiByte(CP_UTF8, 0, rpath, -1, upath, SSH_CFG_PATH_MAX, NULL, NULL);
 
-    wchar_t cmds[4096];
-    swprintf_s(cmds, 4096, L"ls -ld \"%s\"", unix_path);
+    LIBSSH2_SFTP_ATTRIBUTES attrs;
+    if (libssh2_sftp_stat(s->sftp, upath, &attrs) != 0) return -1;
 
-    wchar_t *output = NULL;
-    int out_len = 0;
-    sftp_run(s, cmds, &output, &out_len);
-    if (output) {
-        parse_ls_line(output, out);
-        const wchar_t *name = wcsrchr(remote, L'/');
-        if (!name) name = remote; else name++;
-        wcscpy_s(out->name, 256, name);
-        free(output);
-    }
-    return out->name[0] ? 0 : -1;
+    const wchar_t *nm = wcsrchr(rpath, L'/');
+    if (!nm) nm = rpath; else nm++;
+    wcscpy_s(out->name, 256, nm);
+    out->type = LIBSSH2_SFTP_S_ISDIR(attrs.permissions) ? ENTRY_DIR :
+                LIBSSH2_SFTP_S_ISLNK(attrs.permissions) ? ENTRY_SYMLINK : ENTRY_FILE;
+    out->size = attrs.filesize;
+    out->attrs = out->type == ENTRY_DIR ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    return 0;
 }
 
 static int ssh_fs_exists(const wchar_t *path) {
     if (wcsncmp(path, L"\\\\ssh\\", 6) != 0) return 0;
     FileEntry e;
-    return ssh_fs_stat(path, &e) == 0 ? 1 : 0;
+    return ssh_fs_stat(path, &e) == 0;
 }
 
 static int ssh_fs_is_dir(const wchar_t *path) {
     FileEntry e;
     if (ssh_fs_stat(path, &e) != 0) return 0;
-    return (e.type == ENTRY_DIR) ? 1 : 0;
+    return e.type == ENTRY_DIR;
 }
 
-static void ssh_fs_free_entries(FileEntry *entries) {
-    free(entries);
-}
+static void ssh_fs_free_entries(FileEntry *entries) { free(entries); }
 
 static int ssh_fs_mkdir(const wchar_t *path) {
-    const wchar_t *rest = path + 6;
     if (wcsncmp(path, L"\\\\ssh\\", 6) != 0) return -1;
+    wchar_t conn[64], rpath[SSH_CFG_PATH_MAX];
+    ssh_conn_name(path, conn, 64);
+    ssh_remote_path(path, rpath, SSH_CFG_PATH_MAX);
 
-    wchar_t conn_name[64];
-    const wchar_t *slash = wcschr(rest, L'\\');
-    int name_len = slash ? (int)(slash - rest) : (int)wcslen(rest);
-    wcsncpy_s(conn_name, 64, rest, name_len);
-    conn_name[name_len] = 0;
-
-    SshSession *s = ssh_ensure_connected(conn_name);
+    SshSess *s = ssh_connect(conn);
     if (!s) return -1;
 
-    const wchar_t *remote = slash ? slash + 1 : L".";
-    wchar_t unix_path[SSH_CFG_PATH_MAX];
-    wcscpy_s(unix_path, SSH_CFG_PATH_MAX, remote);
-    for (wchar_t *p = unix_path; *p; p++) if (*p == L'\\') *p = L'/';
+    char upath[SSH_CFG_PATH_MAX];
+    WideCharToMultiByte(CP_UTF8, 0, rpath, -1, upath, SSH_CFG_PATH_MAX, NULL, NULL);
+    return libssh2_sftp_mkdir(s->sftp, upath, 0755);
+}
 
-    wchar_t cmds[1024];
-    swprintf_s(cmds, 1024, L"mkdir \"%s\"", unix_path);
+/* ------------------------------------------------------------------ */
+/* SSH file transfer helpers (used by bgop threads)                     */
+/* ------------------------------------------------------------------ */
 
-    wchar_t *output = NULL;
-    int out_len = 0;
-    int ret = sftp_run(s, cmds, &output, &out_len);
-    if (output) free(output);
-    return ret;
+int ssh_is_ssh_path(const wchar_t *path) {
+    return wcsncmp(path, L"\\\\ssh\\", 6) == 0;
+}
+
+static int sftp_read_file(SshSess *s, const char *rpath, HANDLE local_file) {
+    LIBSSH2_SFTP_HANDLE *fh = libssh2_sftp_open(s->sftp, rpath, LIBSSH2_FXF_READ, 0);
+    if (!fh) return -1;
+    char buf[65536];
+    ssize_t n;
+    int ok = 0;
+    while ((n = libssh2_sftp_read(fh, buf, sizeof(buf))) > 0) {
+        DWORD w;
+        WriteFile(local_file, buf, (DWORD)n, &w, NULL);
+        ok = 1;
+    }
+    libssh2_sftp_close(fh);
+    return ok ? 0 : -1;
+}
+
+static int sftp_write_file(SshSess *s, const char *rpath, HANDLE local_file) {
+    DWORD size = GetFileSize(local_file, NULL);
+    SetFilePointer(local_file, 0, NULL, FILE_BEGIN);
+    LIBSSH2_SFTP_HANDLE *fh = libssh2_sftp_open(s->sftp, rpath,
+        LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC,
+        LIBSSH2_SFTP_S_IRUSR | LIBSSH2_SFTP_S_IWUSR |
+        LIBSSH2_SFTP_S_IRGRP | LIBSSH2_SFTP_S_IROTH);
+    if (!fh) return -1;
+    char buf[65536];
+    DWORD total = 0, rd;
+    while (total < size && ReadFile(local_file, buf, sizeof(buf), &rd, NULL) && rd > 0) {
+        ssize_t wr = libssh2_sftp_write(fh, buf, rd);
+        if (wr < 0) { libssh2_sftp_close(fh); return -1; }
+        total += rd;
+    }
+    libssh2_sftp_close(fh);
+    return 0;
+}
+
+int ssh_transfer_file(const wchar_t *src, const wchar_t *dest);
+
+int ssh_delete_path(const wchar_t *path) {
+    if (!ssh_is_ssh_path(path)) return -1;
+    wchar_t conn[64], rpath[SSH_CFG_PATH_MAX];
+    ssh_conn_name(path, conn, 64);
+    ssh_remote_path(path, rpath, SSH_CFG_PATH_MAX);
+
+    SshSess *s = ssh_connect(conn);
+    if (!s) return -1;
+
+    char up[SSH_CFG_PATH_MAX];
+    WideCharToMultiByte(CP_UTF8, 0, rpath, -1, up, SSH_CFG_PATH_MAX, NULL, NULL);
+
+    /* try unlink first (file), if that fails try rmdir (empty dir), then recursive */
+    if (libssh2_sftp_unlink(s->sftp, up) == 0) return 0;
+    if (libssh2_sftp_rmdir(s->sftp, up) == 0) return 0;
+
+    /* recursive delete via SFTP unix paths */
+    LIBSSH2_SFTP_HANDLE *dh = libssh2_sftp_opendir(s->sftp, up);
+    if (!dh) return -1;
+
+    char name_buf[512];
+    LIBSSH2_SFTP_ATTRIBUTES attrs;
+    while (libssh2_sftp_readdir(dh, name_buf, sizeof(name_buf), &attrs) > 0) {
+        if (name_buf[0] == '.' && (name_buf[1] == 0 || (name_buf[1] == '.' && name_buf[2] == 0)))
+            continue;
+        char sub[SSH_CFG_PATH_MAX * 2];
+        snprintf(sub, sizeof(sub), "%s/%s", up, name_buf);
+        if (LIBSSH2_SFTP_S_ISDIR(attrs.permissions)) {
+            /* recursively delete subdirectory */
+            /* build a fake \\ssh path for recursion */
+            wchar_t w_full[SSH_CFG_PATH_MAX + 64];
+            swprintf_s(w_full, SSH_CFG_PATH_MAX + 64, L"\\\\ssh\\%s\\%s/%s", conn, rpath, name_buf);
+            ssh_delete_path(w_full);
+        } else {
+            libssh2_sftp_unlink(s->sftp, sub);
+        }
+    }
+    libssh2_sftp_closedir(dh);
+    return libssh2_sftp_rmdir(s->sftp, up);
+}
+
+int ssh_transfer_file(const wchar_t *src, const wchar_t *dest) {
+    int src_ssh = ssh_is_ssh_path(src);
+    int dst_ssh = ssh_is_ssh_path(dest);
+
+    if (src_ssh && dst_ssh) return -1;  /* blocked by ops.c */
+    if (!src_ssh && !dst_ssh) return -1; /* should use CopyFileW instead */
+
+    if (src_ssh) {
+        /* download */
+        wchar_t conn[64], rpath[SSH_CFG_PATH_MAX];
+        ssh_conn_name(src, conn, 64);
+        ssh_remote_path(src, rpath, SSH_CFG_PATH_MAX);
+        SshSess *s = ssh_connect(conn);
+        if (!s) return -1;
+        char up[SSH_CFG_PATH_MAX];
+        WideCharToMultiByte(CP_UTF8, 0, rpath, -1, up, SSH_CFG_PATH_MAX, NULL, NULL);
+        HANDLE hf = CreateFileW(dest, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hf == INVALID_HANDLE_VALUE) return -1;
+        int r = sftp_read_file(s, up, hf);
+        CloseHandle(hf);
+        if (r < 0) DeleteFileW(dest);
+        return r;
+    } else {
+        /* upload */
+        wchar_t conn[64], rpath[SSH_CFG_PATH_MAX];
+        ssh_conn_name(dest, conn, 64);
+        ssh_remote_path(dest, rpath, SSH_CFG_PATH_MAX);
+        SshSess *s = ssh_connect(conn);
+        if (!s) return -1;
+        char up[SSH_CFG_PATH_MAX];
+        WideCharToMultiByte(CP_UTF8, 0, rpath, -1, up, SSH_CFG_PATH_MAX, NULL, NULL);
+        HANDLE hf = CreateFileW(src, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hf == INVALID_HANDLE_VALUE) return -1;
+        int r = sftp_write_file(s, up, hf);
+        CloseHandle(hf);
+        return r;
+    }
 }
 
 FsProvider fs_ssh = {
@@ -434,3 +450,11 @@ FsProvider fs_ssh = {
     ssh_fs_free_entries,
     ssh_fs_mkdir
 };
+
+void ssh_cleanup(void) {
+    for (int i = 0; i < SSH_POOL_MAX; i++) {
+        if (g_pool[i].active) {
+            ssh_pool_close(&g_pool[i]);
+        }
+    }
+}

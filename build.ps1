@@ -10,6 +10,12 @@ $output = "$PSScriptRoot\tfm.exe"
 $certPfx = "$PSScriptRoot\tfm-cert.pfx"
 $certSubject = "CN=tfm Code Signing"
 
+$msys2 = "C:\msys64\ucrt64"
+$gcc   = "$msys2\bin\gcc.exe"
+
+# ensure MSYS2 bin is in PATH so libssh2 DLLs are found at link time
+$env:PATH = "$msys2\bin;$env:PATH"
+
 if ($Clean) {
     Write-Host "Cleaning..."
     Remove-Item -Path "$srcDir\*.o" -Force -ErrorAction SilentlyContinue
@@ -19,7 +25,8 @@ if ($Clean) {
 }
 
 $cFlags = @("-static", "-std=c11", "-Wall", "-Wextra")
-$ldFlags = @("-static", "-luser32", "-lkernel32", "-lshell32", "-lshlwapi", "-lole32")
+$ldFlags = @("-static", "-lssh2", "-lz", "-lssl", "-lcrypto",
+             "-lcrypt32", "-lws2_32", "-luser32", "-lkernel32", "-lshell32", "-lshlwapi", "-lole32")
 
 if ($Debug) {
     $cFlags += "-g", "-O0"
@@ -36,13 +43,17 @@ if ($srcFiles.Count -eq 0) {
 }
 
 Write-Host "Compiling $($srcFiles.Count) source files..."
-$gccArgsFlat = (@($cFlags) + $srcFiles.FullName + @("-o", $output) + $ldFlags) -join " "
-Write-Host "gcc $gccArgsFlat"
+$fullArgs = (@($cFlags) + $srcFiles.FullName + @("-o", $output) + $ldFlags) -join " "
+Write-Host "gcc $fullArgs"
 
-$proc = Start-Process -FilePath "gcc" -ArgumentList $gccArgsFlat -NoNewWindow -Wait -PassThru
-if ($proc.ExitCode -ne 0) {
-    Write-Error "Build failed with exit code $($proc.ExitCode)"
-    exit $proc.ExitCode
+& $gcc @cFlags $srcFiles.FullName -o $output @ldFlags 2>&1 | ForEach-Object {
+    if ($_ -match "error:") { Write-Host $_ -ForegroundColor Red }
+    elseif ($_ -match "warning:") { Write-Host $_ -ForegroundColor Yellow }
+    else { Write-Host $_ }
+}
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Build failed with exit code $LASTEXITCODE"
+    exit $LASTEXITCODE
 }
 
 $size = (Get-Item $output).Length

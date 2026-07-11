@@ -30,6 +30,10 @@ typedef struct FsProvider {
 
 extern FsProvider fs_local;
 extern FsProvider fs_ssh;
+void ssh_cleanup(void);
+int  ssh_is_ssh_path(const wchar_t *path);
+int  ssh_transfer_file(const wchar_t *src, const wchar_t *dest);
+int  ssh_delete_path(const wchar_t *path);
 
 int fs_entries_sort(FileEntry *entries, int count, int sort_by, int reverse);
 

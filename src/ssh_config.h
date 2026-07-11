@@ -11,8 +11,6 @@ typedef struct {
     wchar_t host[256];
     int     port;
     wchar_t user[64];
-    wchar_t auth_method[16];     /* "key" or "password" */
-    wchar_t key_file[SSH_CFG_PATH_MAX];
     wchar_t password[128];
     wchar_t remote_path[SSH_CFG_PATH_MAX];
 } SshConnection;

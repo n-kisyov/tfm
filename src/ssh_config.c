@@ -50,8 +50,6 @@ int ssh_config_load(SshConfig *cfg, const wchar_t *path) {
             s = json_get_str(cv, L"name", NULL);     if (s) wcsncpy_s(c->name, 64, s, 63);
             s = json_get_str(cv, L"host", NULL);     if (s) wcsncpy_s(c->host, 256, s, 255);
             s = json_get_str(cv, L"user", NULL);     if (s) wcsncpy_s(c->user, 64, s, 63);
-            s = json_get_str(cv, L"auth_method", NULL); if (s) wcsncpy_s(c->auth_method, 16, s, 15);
-            s = json_get_str(cv, L"key_file", NULL); if (s) wcscpy_s(c->key_file, SSH_CFG_PATH_MAX, s);
             s = json_get_str(cv, L"password", NULL); if (s) wcsncpy_s(c->password, 128, s, 127);
             s = json_get_str(cv, L"remote_path", NULL); if (s) wcscpy_s(c->remote_path, SSH_CFG_PATH_MAX, s);
             c->port = (int)json_get_num(cv, L"port", 22);
@@ -109,13 +107,11 @@ int ssh_config_save(const SshConfig *cfg, const wchar_t *path) {
         wchar_t num[16];
         BUF_JSON_KV(buf, cap, pos, "name", c->name);
         BUF_JSON_KV(buf, cap, pos, "host", c->host);
-        _itow_s(c->port, num, 16, 10);
+        swprintf_s(num, 16, L"%d", c->port);
         pos = buf_puts(buf, cap, pos, L"      \"port\": ");
         pos = buf_puts(buf, cap, pos, num);
         pos = buf_puts(buf, cap, pos, L",\r\n");
         BUF_JSON_KV(buf, cap, pos, "user", c->user);
-        BUF_JSON_KV(buf, cap, pos, "auth_method", c->auth_method[0] ? c->auth_method : L"key");
-        BUF_JSON_KV(buf, cap, pos, "key_file", c->key_file);
         BUF_JSON_KV(buf, cap, pos, "password", c->password);
         BUF_JSON_KV(buf, cap, pos, "remote_path", c->remote_path);
         pos = buf_puts(buf, cap, pos, L"      \"_end\": \"\"\r\n");

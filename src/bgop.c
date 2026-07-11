@@ -119,6 +119,8 @@ static unsigned int __stdcall bg_thread_copy(void *param) {
     t->start_ticks = GetTickCount();
     wcscpy_s(t->title, 64, L"Copying files...");
 
+    int any_ssh = ssh_is_ssh_path(t->paths[0]) || ssh_is_ssh_path(t->dest_dir);
+
     for (int i = 0; i < t->path_count && !t->error; i++) {
         const wchar_t *src  = t->paths[i];
         const wchar_t *name = wcsrchr(src, L'\\');
@@ -127,17 +129,21 @@ static unsigned int __stdcall bg_thread_copy(void *param) {
         wchar_t *dest = path_join(t->dest_dir, name);
         if (!dest) continue;
 
-        DWORD attrs = GetFileAttributesW(src);
-        if (attrs == INVALID_FILE_ATTRIBUTES) { free(dest); continue; }
-
-        if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
-            bg_copy_dir_tree(src, dest);
+        int ok = 0;
+        if (any_ssh) {
+            ok = (ssh_transfer_file(src, dest) == 0);
         } else {
-            bg_copy_single_file(src, dest);
+            DWORD attrs = GetFileAttributesW(src);
+            if (attrs == INVALID_FILE_ATTRIBUTES) { free(dest); continue; }
+            if (attrs & FILE_ATTRIBUTE_DIRECTORY)
+                ok = (bg_copy_dir_tree(src, dest) >= 0);
+            else
+                ok = (bg_copy_single_file(src, dest) != 0);
         }
 
         update_progress(t, name);
         free(dest);
+        (void)ok;
     }
 
     InterlockedExchange(&t->finished, 1);
@@ -150,6 +156,8 @@ static unsigned int __stdcall bg_thread_move(void *param) {
     t->start_ticks = GetTickCount();
     wcscpy_s(t->title, 64, L"Moving files...");
 
+    int any_ssh = ssh_is_ssh_path(t->paths[0]) || ssh_is_ssh_path(t->dest_dir);
+
     for (int i = 0; i < t->path_count && !t->error; i++) {
         const wchar_t *src  = t->paths[i];
         const wchar_t *name = wcsrchr(src, L'\\');
@@ -158,19 +166,29 @@ static unsigned int __stdcall bg_thread_move(void *param) {
         wchar_t *dest = path_join(t->dest_dir, name);
         if (!dest) continue;
 
-        DWORD attrs = GetFileAttributesW(src);
-        if (attrs == INVALID_FILE_ATTRIBUTES) { free(dest); continue; }
-
-        if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
-            if (!MoveFileExW(src, dest, MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING)) {
-                /* fallback: copy then delete */
-                bg_copy_dir_tree(src, dest);
-                bg_delete_dir_tree(src);
+        if (any_ssh) {
+            /* copy then delete source */
+            if (ssh_transfer_file(src, dest) == 0) {
+                if (ssh_is_ssh_path(src))
+                    ssh_delete_path(src);
+                else if (GetFileAttributesW(src) & FILE_ATTRIBUTE_DIRECTORY)
+                    bg_delete_dir_tree(src);
+                else
+                    DeleteFileW(src);
             }
         } else {
-            if (GetFileAttributesW(dest) != INVALID_FILE_ATTRIBUTES)
-                SetFileAttributesW(dest, FILE_ATTRIBUTE_NORMAL);
-            MoveFileExW(src, dest, MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING);
+            DWORD attrs = GetFileAttributesW(src);
+            if (attrs == INVALID_FILE_ATTRIBUTES) { free(dest); continue; }
+            if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+                if (!MoveFileExW(src, dest, MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING)) {
+                    bg_copy_dir_tree(src, dest);
+                    bg_delete_dir_tree(src);
+                }
+            } else {
+                if (GetFileAttributesW(dest) != INVALID_FILE_ATTRIBUTES)
+                    SetFileAttributesW(dest, FILE_ATTRIBUTE_NORMAL);
+                MoveFileExW(src, dest, MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING);
+            }
         }
 
         update_progress(t, name);
@@ -187,19 +205,24 @@ static unsigned int __stdcall bg_thread_delete(void *param) {
     t->start_ticks = GetTickCount();
     wcscpy_s(t->title, 64, L"Deleting files...");
 
+    int any_ssh = ssh_is_ssh_path(t->paths[0]);
+
     for (int i = 0; i < t->path_count && !t->error; i++) {
         const wchar_t *src = t->paths[i];
         const wchar_t *name = wcsrchr(src, L'\\');
         if (!name) name = src; else name++;
 
-        DWORD attrs = GetFileAttributesW(src);
-        if (attrs == INVALID_FILE_ATTRIBUTES) continue;
-
-        if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
-            bg_delete_dir_tree(src);
+        if (any_ssh) {
+            ssh_delete_path(src);
         } else {
-            SetFileAttributesW(src, FILE_ATTRIBUTE_NORMAL);
-            DeleteFileW(src);
+            DWORD attrs = GetFileAttributesW(src);
+            if (attrs == INVALID_FILE_ATTRIBUTES) continue;
+            if (attrs & FILE_ATTRIBUTE_DIRECTORY)
+                bg_delete_dir_tree(src);
+            else {
+                SetFileAttributesW(src, FILE_ATTRIBUTE_NORMAL);
+                DeleteFileW(src);
+            }
         }
         update_progress(t, name);
     }

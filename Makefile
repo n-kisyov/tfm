@@ -4,9 +4,10 @@ TARGET  = tfm.exe
 SRCDIR  = src
 SRCS    = $(wildcard $(SRCDIR)/*.c)
 OBJS    = $(patsubst $(SRCDIR)/%.c,$(SRCDIR)/%.o,$(SRCS))
-CC      = gcc
+CC      = C:/msys64/ucrt64/bin/gcc.exe
 CFLAGS  = -static -std=c11 -Wall -Wextra
-LDFLAGS = -static -luser32 -lkernel32 -lshell32 -lshlwapi -lole32
+LDFLAGS = -static -lssh2 -lz -lssl -lcrypto -lcrypt32 -lws2_32 \
+          -luser32 -lkernel32 -lshell32 -lshlwapi -lole32
 
 all: release
 
