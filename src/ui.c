@@ -383,7 +383,11 @@ void ui_draw_history(const Theme *theme, int tw, int th,
 
     ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
     ui_set_fg(theme_get(theme, COLOR_DIALOG_BORDER));
-    ui_draw_text_centered(by + bh - 1, bw, L" F3 / Esc = close ");
+    {
+        const wchar_t *ft = L" F3 / Esc = close ";
+        int fl = (int)wcslen(ft);
+        ui_draw_text(bx + (bw - fl) / 2, by + bh - 1, ft);
+    }
     ui_reset_colors();
 }
 

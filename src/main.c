@@ -164,7 +164,10 @@ static void render(void) {
         ui_set_bg(theme_get(&g_app.theme, COLOR_DIALOG_BG));
         ui_set_fg(theme_get(&g_app.theme, COLOR_SELECTED_FG));
         ui_set_bold();
-        ui_draw_text_centered(by + 1, bw, L" tfm Keyboard Shortcuts ");
+        {
+            const wchar_t *t = L" tfm Keyboard Shortcuts ";
+            ui_draw_text(bx + (bw - (int)wcslen(t)) / 2, by + 1, t);
+        }
         ui_reset_colors();
 
         /* content */
@@ -180,7 +183,11 @@ static void render(void) {
 
         /* footer */
         ui_set_fg(theme_get(&g_app.theme, COLOR_DIALOG_BORDER));
-        ui_draw_text_centered(by + bh - 2, bw, L" F1 = Close ");
+        {
+            const wchar_t *f = L" F1 = Close ";
+            ui_draw_text(bx + (bw - (int)wcslen(f)) / 2, by + bh - 2, f);
+        }
+        ui_reset_colors();
 
         ui_reset_colors();
         ui_end_frame();
