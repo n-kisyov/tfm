@@ -1,5 +1,6 @@
 #include "ui.h"
 #include "input.h"
+#include "ssh_config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -602,6 +603,279 @@ int ui_input_dialog(const Theme *theme, const wchar_t *title, wchar_t *buf, int 
                 memmove(buf + cursor + 1, buf + cursor, (len - cursor + 1) * sizeof(wchar_t));
                 buf[cursor] = L' ';
                 cursor++; len++;
+                break;
+            }
+            break;
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* SSH connection config editor                                        */
+/* ------------------------------------------------------------------ */
+
+static int ssh_edit_form(const Theme *theme, SshConnection *c, int is_new) {
+    wchar_t name[64], host[256], port_s[16], user[64], key_file[SSH_CFG_PATH_MAX], rem[SSH_CFG_PATH_MAX];
+    wchar_t port_s_buf[16];
+
+    wcscpy_s(name, 64, c->name);
+    wcscpy_s(host, 256, c->host);
+    _itow_s(c->port, port_s_buf, 16, 10);
+    wcscpy_s(port_s, 16, port_s_buf);
+    wcscpy_s(user, 64, c->user);
+    wcscpy_s(key_file, SSH_CFG_PATH_MAX, c->key_file);
+    wcscpy_s(rem, SSH_CFG_PATH_MAX, c->remote_path);
+
+    wchar_t *fields[] = { name, host, port_s, user, key_file, rem };
+    int    field_lens[] = { 63, 255, 15, 63, SSH_CFG_PATH_MAX - 1, SSH_CFG_PATH_MAX - 1 };
+    const wchar_t *labels[] = { L"Name:", L"Host:", L"Port:", L"User:", L"Key file:", L"Rem. path:" };
+    int nf = 6;
+    int cur_field = 0;
+    int cur_pos[6] = {0};
+    for (int i = 0; i < nf; i++) cur_pos[i] = (int)wcslen(fields[i]);
+
+    int tw, th;
+    while (1) {
+        ui_get_term_size(&tw, &th);
+        int bw = tw - 8;
+        if (bw < 50) bw = tw - 2;
+        int bh = nf + 5;
+        if (bh > th - 2) bh = th - 2;
+        int bx = (tw - bw) / 2;
+        int by = (th - bh) / 2;
+
+        ui_begin_frame();
+        ui_set_bg(theme_get(theme, COLOR_BG));
+        ui_clear_screen();
+        ui_reset_colors();
+
+        ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+        ui_set_fg(theme_get(theme, COLOR_FILE));
+        ui_fill_rect(bx, by, bw, bh, L' ');
+        ui_reset_colors();
+        ui_set_fg(theme_get(theme, COLOR_FOCUS_BORDER));
+        ui_draw_rect(bx, by, bw, bh);
+
+        { const wchar_t *t = is_new ? L" Add Connection " : L" Edit Connection ";
+            ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+            ui_set_fg(theme_get(theme, COLOR_SELECTED_FG));
+            ui_set_bold();
+            ui_draw_text(bx + (bw - (int)wcslen(t)) / 2, by + 1, t);
+            ui_reset_colors();
+        }
+
+        for (int fi = 0; fi < nf; fi++) {
+            int ry = by + 3 + fi;
+            ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+            ui_set_fg(theme_get(theme, COLOR_FILE));
+            ui_draw_text(bx + 2, ry, labels[fi]);
+
+            ui_set_bg(theme_get(theme, COLOR_BG));
+            ui_set_fg(theme_get(theme, COLOR_CMDLINE));
+            int val_x = bx + 16;
+            int val_w = bw - 20;
+            if (val_w < 10) val_w = 10;
+            ui_draw_h_line(val_x, ry, val_w, L' ');
+
+            if (fi == cur_field) {
+                ui_set_bg(theme_get(theme, COLOR_SELECTED_BG));
+                ui_set_fg(theme_get(theme, COLOR_SELECTED_FG));
+            }
+            ui_draw_text_trunc(val_x + 1, ry, val_w - 2, fields[fi]);
+
+            if (fi == cur_field) {
+                int cx = val_x + 1 + cur_pos[fi];
+                if (cx >= val_x + val_w - 1) cx = val_x + val_w - 2;
+                ui_set_bg(theme_get(theme, COLOR_FOCUS_BORDER));
+                ui_set_fg(theme_get(theme, COLOR_BG));
+                ui_move(cx, ry);
+                if (cur_pos[fi] < (int)wcslen(fields[fi])) {
+                    wchar_t ch = fields[fi][cur_pos[fi]];
+                    if (!ch) ch = L' ';
+                    ui_draw_char(cx, ry, ch);
+                } else {
+                    ui_draw_char(cx, ry, L' ');
+                }
+            }
+            ui_reset_colors();
+            ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+        }
+
+        { const wchar_t *f = L" Arrows=Navigate  Enter=Save  Esc=Cancel ";
+            ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+            ui_set_fg(theme_get(theme, COLOR_DIALOG_BORDER));
+            ui_draw_text(bx + (bw - (int)wcslen(f)) / 2, by + bh - 2, f);
+        }
+        ui_reset_colors();
+        ui_end_frame();
+
+        KeyEvent ev;
+        while (input_poll(&ev)) {
+            if (ev.code == KEY_ESC) return 0;
+            if (ev.code == KEY_ENTER) {
+                /* save to connection */
+                wcscpy_s(c->name, 64, name);
+                wcscpy_s(c->host, 256, host);
+                c->port = _wtoi(port_s);
+                if (c->port <= 0) c->port = 22;
+                wcscpy_s(c->user, 64, user);
+                wcscpy_s(c->key_file, SSH_CFG_PATH_MAX, key_file);
+                wcscpy_s(c->remote_path, SSH_CFG_PATH_MAX, rem);
+                wcscpy_s(c->auth_method, 16, L"key");
+                return 1;
+            }
+            if (ev.code == KEY_UP && cur_field > 0) { cur_field--; break; }
+            if (ev.code == KEY_DOWN && cur_field < nf - 1) { cur_field++; break; }
+            if (ev.code == KEY_LEFT && cur_pos[cur_field] > 0) { cur_pos[cur_field]--; break; }
+            if (ev.code == KEY_RIGHT && cur_pos[cur_field] < (int)wcslen(fields[cur_field])) { cur_pos[cur_field]++; break; }
+            if (ev.code == KEY_HOME) { cur_pos[cur_field] = 0; break; }
+            if (ev.code == KEY_END) { cur_pos[cur_field] = (int)wcslen(fields[cur_field]); break; }
+            if (ev.code == KEY_BACKSPACE && cur_pos[cur_field] > 0) {
+                wchar_t *fld = fields[cur_field];
+                int len = (int)wcslen(fld);
+                memmove(fld + cur_pos[cur_field] - 1, fld + cur_pos[cur_field],
+                        (len - cur_pos[cur_field] + 1) * sizeof(wchar_t));
+                cur_pos[cur_field]--;
+                break;
+            }
+            if (ev.code == KEY_DELETE && cur_pos[cur_field] < (int)wcslen(fields[cur_field])) {
+                wchar_t *fld = fields[cur_field];
+                int len = (int)wcslen(fld);
+                memmove(fld + cur_pos[cur_field], fld + cur_pos[cur_field] + 1,
+                        (len - cur_pos[cur_field]) * sizeof(wchar_t));
+                break;
+            }
+            if (ev.code == KEY_CHAR && ev.ch >= 32) {
+                wchar_t *fld = fields[cur_field];
+                int max_len = field_lens[cur_field];
+                int len = (int)wcslen(fld);
+                if (len < max_len) {
+                    memmove(fld + cur_pos[cur_field] + 1, fld + cur_pos[cur_field],
+                            (len - cur_pos[cur_field] + 1) * sizeof(wchar_t));
+                    fld[cur_pos[cur_field]] = ev.ch;
+                    cur_pos[cur_field]++;
+                }
+                break;
+            }
+            if (ev.code == KEY_SPACE) {
+                wchar_t *fld = fields[cur_field];
+                int max_len = field_lens[cur_field];
+                int len = (int)wcslen(fld);
+                if (len < max_len) {
+                    memmove(fld + cur_pos[cur_field] + 1, fld + cur_pos[cur_field],
+                            (len - cur_pos[cur_field] + 1) * sizeof(wchar_t));
+                    fld[cur_pos[cur_field]] = L' ';
+                    cur_pos[cur_field]++;
+                }
+                break;
+            }
+            break;
+        }
+    }
+}
+
+void ui_ssh_config_dialog(const Theme *theme, void *ssh_config_v) {
+    SshConfig *cfg = (SshConfig *)ssh_config_v;
+    int sel = 0;
+    int tw, th;
+
+    while (1) {
+        ui_get_term_size(&tw, &th);
+        int bw = tw - 8;
+        if (bw < 50) bw = tw - 2;
+        if (bw < 30) bw = 30;
+        int texts = cfg->count + 1;
+        int bh = texts + 4;
+        if (bh > th - 2) bh = th - 2;
+        int bx = (tw - bw) / 2;
+        int by = (th - bh) / 2;
+        if (by < 0) by = 0;
+
+        ui_begin_frame();
+        ui_set_bg(theme_get(theme, COLOR_BG));
+        ui_clear_screen();
+        ui_reset_colors();
+
+        ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+        ui_set_fg(theme_get(theme, COLOR_FILE));
+        ui_fill_rect(bx, by, bw, bh, L' ');
+        ui_reset_colors();
+        ui_set_fg(theme_get(theme, COLOR_FOCUS_BORDER));
+        ui_draw_rect(bx, by, bw, bh);
+
+        ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+        ui_set_fg(theme_get(theme, COLOR_SELECTED_FG));
+        ui_set_bold();
+        { const wchar_t *t = L" SSH Connections (Ctrl+Shift+S) ";
+            ui_draw_text(bx + (bw - (int)wcslen(t)) / 2, by + 1, t); }
+        ui_reset_colors();
+
+        ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+        for (int i = 0; i < cfg->count; i++) {
+            int row = by + 3 + i;
+            if (row >= by + bh - 1) break;
+            wchar_t line[256];
+            const SshConnection *c = &cfg->conns[i];
+            swprintf_s(line, 256, L"  %-20s %s@%s:%d  %s",
+                       c->name, c->user, c->host, c->port,
+                       c->remote_path[0] ? c->remote_path : L"~");
+            if (i == sel) {
+                ui_set_bg(theme_get(theme, COLOR_SELECTED_BG));
+                ui_set_fg(theme_get(theme, COLOR_SELECTED_FG));
+                ui_set_bold();
+            } else {
+                ui_set_fg(theme_get(theme, COLOR_FILE));
+            }
+            ui_draw_text(bx + 2, row, line);
+            ui_reset_colors();
+            ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+        }
+        {
+            int row = by + 3 + cfg->count;
+            if (sel == cfg->count) {
+                ui_set_bg(theme_get(theme, COLOR_SELECTED_BG));
+                ui_set_fg(theme_get(theme, COLOR_SELECTED_FG));
+                ui_set_bold();
+            } else {
+                ui_set_fg(theme_get(theme, COLOR_FILE));
+            }
+            ui_draw_text(bx + 2, row, L"  [ Add New Connection ]");
+            ui_reset_colors();
+            ui_set_bg(theme_get(theme, COLOR_DIALOG_BG));
+        }
+        { const wchar_t *f = L" Enter=Edit  Delete=Remove  Esc=Close ";
+            ui_set_fg(theme_get(theme, COLOR_DIALOG_BORDER));
+            ui_draw_text(bx + (bw - (int)wcslen(f)) / 2, by + bh - 2, f); }
+        ui_reset_colors();
+        ui_end_frame();
+
+        KeyEvent ev;
+        while (input_poll(&ev)) {
+            if (ev.code == KEY_ESC) return;
+            if (ev.code == KEY_UP && sel > 0) { sel--; break; }
+            if (ev.code == KEY_DOWN && sel < cfg->count) { sel++; break; }
+            if (ev.code == KEY_ENTER) {
+                if (sel < cfg->count) {
+                    ssh_edit_form(theme, &cfg->conns[sel], 0);
+                } else {
+                    if (cfg->count >= SSH_MAX_CONNECTIONS) break;
+                    SshConnection tmp;
+                    memset(&tmp, 0, sizeof(tmp));
+                    tmp.port = 22;
+                    wcscpy_s(tmp.auth_method, 16, L"key");
+                    if (ssh_edit_form(theme, &tmp, 1)) {
+                        cfg->conns[cfg->count] = tmp;
+                        cfg->count++;
+                        sel = cfg->count - 1;
+                    }
+                }
+                break;
+            }
+            if (ev.code == KEY_DELETE && sel < cfg->count) {
+                for (int i = sel; i < cfg->count - 1; i++)
+                    cfg->conns[i] = cfg->conns[i + 1];
+                cfg->count--;
+                if (sel >= cfg->count && sel > 0) sel = cfg->count - 1;
                 break;
             }
             break;

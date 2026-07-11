@@ -9,6 +9,7 @@
 #include "input.h"
 #include "fs.h"
 #include "bgop.h"
+#include "ssh_config.h"
 
 typedef enum {
     FOCUS_LEFT,
@@ -33,6 +34,7 @@ typedef struct {
     int         history_count;
     int         history_visible;
     int         panel_locked[2];     /* disallow dir-change during bgop */
+    SshConfig   ssh_config;
 } AppState;
 
 extern AppState g_app;

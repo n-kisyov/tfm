@@ -32,6 +32,7 @@ typedef enum {
     KEY_ALT_SHIFT_N,
     KEY_ALT_SHIFT_B,
     KEY_ALT_SHIFT_M,
+    KEY_CTRL_SHIFT_S,
     KEY_BACKSPACE,
     KEY_DELETE,
     KEY_INSERT,

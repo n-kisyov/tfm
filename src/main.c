@@ -45,12 +45,18 @@ static void init_app(void) {
 
     g_app.fs = &fs_local;
 
+    /* load SSH connection config */
+    ssh_config_init(&g_app.ssh_config);
+    ssh_config_load(&g_app.ssh_config, ssh_config_path());
+
     /* init panels */
     for (int i = 0; i < 2; i++) {
         wchar_t *dir = g_app.config.startup_dirs[i][0];
         if (!dir || dir[0] == 0 || !g_app.fs->exists(dir) || !g_app.fs->is_dir(dir))
             dir = get_home_dir();
         panel_init(&g_app.panels[i], dir);
+        g_app.panels[i].fs = &fs_local;
+        g_app.panels[i].panel_idx = i;
 
         g_app.panels[i].show_hidden = g_app.config.show_hidden;
         g_app.panels[i].sort_by = g_app.config.sort_by;
@@ -126,6 +132,7 @@ static void render(void) {
             L"       Backspace Parent directory        Space Toggle tag (multi-select)",
             L"       Ctrl+D    Drive selector          F3   View / Re-show progress",
             L"       Esc       Clear tags              F2   Refresh panel",
+            L"       Ctrl+Sh+S SSH connections           Ctrl+Sh+N New tab",
             L"",
             L"       Tabs (1 main + up to 4 extra)     Shell line",
             L"       ----------------------------        ----------",
@@ -323,6 +330,11 @@ static void handle_panel_input(Panel *panel, int panel_idx, KeyEvent *ev) {
     case KEY_ALT_SHIFT_B:
         panel_tab_next(panel);
         panel_refresh(panel, g_app.fs);
+        g_app.needs_redraw = 1;
+        return;
+    case KEY_CTRL_SHIFT_S:
+        ui_ssh_config_dialog(&g_app.theme, &g_app.ssh_config);
+        ssh_config_save(&g_app.ssh_config, ssh_config_path());
         g_app.needs_redraw = 1;
         return;
     case KEY_CTRL_R:

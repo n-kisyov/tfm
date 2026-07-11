@@ -1,6 +1,10 @@
 #include "panel.h"
 #include "ui.h"
 #include "utils.h"
+#include "ssh_config.h"
+#include "main.h"
+#include <stdlib.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -35,6 +39,7 @@ void panel_free(Panel *p) {
 }
 
 void panel_refresh(Panel *p, const FsProvider *fs) {
+    (void)fs;
     PanelTab *tab = &p->tabs[p->active_tab];
     if (p->entries) {
         free(p->entries);
@@ -45,7 +50,7 @@ void panel_refresh(Panel *p, const FsProvider *fs) {
     p->tagged = NULL;
     p->tagged_count = 0;
 
-    fs->list_dir(tab->path, &p->entries, &p->entry_count);
+    p->fs->list_dir(tab->path, &p->entries, &p->entry_count);
     if (!p->entries || p->entry_count == 0) {
         p->entry_count = 0;
         p->entries = NULL;
@@ -60,6 +65,7 @@ void panel_refresh(Panel *p, const FsProvider *fs) {
 }
 
 void panel_enter_dir(Panel *p, const FsProvider *fs) {
+    (void)fs;
     PanelTab *tab = &p->tabs[p->active_tab];
     if (p->entry_count == 0) return;
     FileEntry *e = &p->entries[tab->cursor];
@@ -79,6 +85,7 @@ void panel_enter_dir(Panel *p, const FsProvider *fs) {
 }
 
 void panel_go_parent(Panel *p, const FsProvider *fs) {
+    (void)fs;
     if (p->in_drive_list) { panel_exit_drives(p, fs); return; }
     PanelTab *tab = &p->tabs[p->active_tab];
     if (is_root_path(tab->path)) { panel_go_drives(p, fs); return; }
@@ -138,6 +145,17 @@ void panel_go_drives(Panel *p, const FsProvider *fs) {
         }
     }
 
+    /* add SSH connections after physical drives */
+    for (int i = 0; i < g_app.ssh_config.count && p->entry_count < 300; i++) {
+        const SshConnection *conn = &g_app.ssh_config.conns[i];
+        swprintf_s(p->entries[p->entry_count].name, 256,
+                   L"[ssh] %s  (%s@%s:%s)",
+                   conn->name, conn->user, conn->host,
+                   conn->remote_path[0] ? conn->remote_path : L"~");
+        p->entries[p->entry_count].type = ENTRY_DIR;
+        p->entry_count++;
+    }
+
     tab->cursor = 0;
     tab->scroll_offset = 0;
     wcscpy_s(tab->path, 520, L"Drives");
@@ -173,26 +191,57 @@ void panel_enter_on_drive(Panel *p, const FsProvider *fs) {
     PanelTab *tab = &p->tabs[p->active_tab];
     if (!p->in_drive_list || p->entry_count == 0) return;
     FileEntry *e = &p->entries[tab->cursor];
-    wchar_t drive_letter = towupper(e->name[0]);
 
     p->in_drive_list = 0;
     free(p->entries);
     p->entries = NULL;
     p->entry_count = 0;
 
-    if (p->drive_paths[drive_letter - L'A'][0] &&
-        fs->exists(p->drive_paths[drive_letter - L'A']) &&
-        fs->is_dir(p->drive_paths[drive_letter - L'A'])) {
-        wcscpy_s(tab->path, 520, p->drive_paths[drive_letter - L'A']);
+    /* check if this is an SSH connection */
+    if (wcsncmp(e->name, L"[ssh]", 5) == 0) {
+        /* parse: "[ssh] ConnName  (user@host:path)" */
+        const wchar_t *name_start = e->name + 6; /* skip "[ssh] " */
+        const wchar_t *sp = wcschr(name_start, L' ');
+
+        wchar_t conn_name[64] = {0};
+        if (sp) wcsncpy_s(conn_name, 64, name_start, (int)(sp - name_start));
+        else   wcscpy_s(conn_name, 64, name_start);
+
+        /* find the connection config to get remote path */
+        const SshConnection *conn = NULL;
+        for (int i = 0; i < g_app.ssh_config.count; i++) {
+            if (wcscmp(g_app.ssh_config.conns[i].name, conn_name) == 0) {
+                conn = &g_app.ssh_config.conns[i];
+                break;
+            }
+        }
+
+        wchar_t remote[SSH_CFG_PATH_MAX];
+        if (conn && conn->remote_path[0])
+            wcscpy_s(remote, SSH_CFG_PATH_MAX, conn->remote_path);
+        else
+            wcscpy_s(remote, SSH_CFG_PATH_MAX, L".");
+
+        swprintf_s(tab->path, 520, L"\\\\ssh\\%s\\%s", conn_name, remote);
+        p->fs = &fs_ssh;
+        wcsncpy_s(tab->display_name, 32, conn_name, 31);
     } else {
-        swprintf_s(tab->path, 520, L"%c:\\", drive_letter);
-        p->drive_paths[drive_letter - L'A'][0] = 0; /* clear invalid path */
+        wchar_t drive_letter = towupper(e->name[0]);
+        if (p->drive_paths[drive_letter - L'A'][0] &&
+            fs->exists(p->drive_paths[drive_letter - L'A']) &&
+            fs->is_dir(p->drive_paths[drive_letter - L'A'])) {
+            wcscpy_s(tab->path, 520, p->drive_paths[drive_letter - L'A']);
+        } else {
+            swprintf_s(tab->path, 520, L"%c:\\", drive_letter);
+            p->drive_paths[drive_letter - L'A'][0] = 0;
+        }
+        p->fs = &fs_local;
+        const wchar_t *nm = wcsrchr(tab->path, L'\\');
+        wcsncpy_s(tab->display_name, 32, nm ? nm + 1 : tab->path, 31);
     }
-    const wchar_t *nm = wcsrchr(tab->path, L'\\');
-    wcsncpy_s(tab->display_name, 32, nm ? nm + 1 : tab->path, 31);
     tab->cursor = 0;
     tab->scroll_offset = 0;
-    panel_refresh(p, fs);
+    panel_refresh(p, p->fs);
 }
 
 void panel_cursor_up(Panel *p) {

@@ -82,6 +82,11 @@ static int copy_dir_recursive(const wchar_t *src, const wchar_t *dest,
 int ops_copy_files(const wchar_t **paths, int count, const wchar_t *dest_dir,
                    const Theme *theme) {
     if (!paths || count <= 0 || !dest_dir) return -1;
+    if (wcsncmp(dest_dir, L"\\\\ssh\\", 6) == 0 && count > 0 &&
+        wcsncmp(paths[0], L"\\\\ssh\\", 6) == 0) {
+        ui_message_box(theme, L"Error", L"Remote-to-remote copy not supported");
+        return 0;
+    }
     int copied = 0;
     for (int i = 0; i < count; i++) {
         const wchar_t *src = paths[i];
@@ -127,6 +132,11 @@ static int move_dir_recursive(const wchar_t *src, const wchar_t *dest,
 int ops_move_files(const wchar_t **paths, int count, const wchar_t *dest_dir,
                    const Theme *theme) {
     if (!paths || count <= 0 || !dest_dir) return -1;
+    if (wcsncmp(dest_dir, L"\\\\ssh\\", 6) == 0 && count > 0 &&
+        wcsncmp(paths[0], L"\\\\ssh\\", 6) == 0) {
+        ui_message_box(theme, L"Error", L"Remote-to-remote move not supported");
+        return 0;
+    }
     int moved = 0;
     for (int i = 0; i < count; i++) {
         const wchar_t *src = paths[i];

@@ -48,4 +48,6 @@ void ui_message_box(const Theme *theme, const wchar_t *title, const wchar_t *msg
 int  ui_confirm_dialog(const Theme *theme, const wchar_t *title, const wchar_t *msg);
 int  ui_input_dialog(const Theme *theme, const wchar_t *title, wchar_t *buf, int buf_len);
 
+void ui_ssh_config_dialog(const Theme *theme, void *ssh_config);
+
 #endif

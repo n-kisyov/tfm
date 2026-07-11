@@ -31,6 +31,8 @@ typedef struct {
     int        dirty;
 
     int        in_drive_list;
+    int        panel_idx;           /* 0=left, 1=right */
+    const struct FsProvider *fs;    /* may differ per-panel (local vs ssh) */
     wchar_t    drive_paths[26][520];
     FileEntry  saved_entries[4096];
     int        saved_entry_count;

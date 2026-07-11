@@ -29,6 +29,7 @@ typedef struct FsProvider {
 } FsProvider;
 
 extern FsProvider fs_local;
+extern FsProvider fs_ssh;
 
 int fs_entries_sort(FileEntry *entries, int count, int sort_by, int reverse);
 
